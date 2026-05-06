@@ -1,0 +1,98 @@
+{
+  "theme": "Light",
+  "archetype": "1_Organic_Earthy",
+  "domain_context": "B2B CRM Mobile Web App for Indian Wholesaler (WhatsApp-like)",
+  "design_philosophy": "Utilitarian WhatsApp-Green: Familiar, fast, reliable, and touch-optimized. High utility density combined with organic green brand markers to invoke the trust of native messaging apps.",
+  "colors": {
+    "primary": {
+      "DEFAULT": "#16A34A",
+      "foreground": "#FFFFFF",
+      "hover": "#15803D"
+    },
+    "background": "#F0F2F5",
+    "surface": {
+      "card": "#FFFFFF",
+      "glass": "rgba(255, 255, 255, 0.85)"
+    },
+    "text": {
+      "primary": "#111827",
+      "secondary": "#4B5563",
+      "muted": "#9CA3AF"
+    },
+    "border": "#E5E7EB",
+    "status": {
+      "healthy": "#10B981",
+      "caution": "#F59E0B",
+      "risk": "#EF4444"
+    },
+    "chat": {
+      "outgoing_bubble": "#DCF8C6",
+      "incoming_bubble": "#FFFFFF"
+    }
+  },
+  "typography": {
+    "font_families": {
+      "headings": "Manrope, sans-serif",
+      "body": "Figtree, sans-serif",
+      "mono": "JetBrains Mono, monospace"
+    },
+    "rules": {
+      "h1": "text-2xl sm:text-3xl font-bold tracking-tight text-gray-900",
+      "h2": "text-xl font-semibold tracking-tight text-gray-900",
+      "h3": "text-lg font-medium text-gray-900",
+      "body": "text-base leading-relaxed text-gray-600",
+      "labels": "text-xs font-semibold uppercase tracking-[0.2em] text-gray-500"
+    }
+  },
+  "layout_and_spacing": {
+    "strategy": "Mobile-First App Layout",
+    "navigation": "Fixed bottom navigation bar for mobile app feel.",
+    "spacing_scale": "Generous vertical spacing. Use p-4 and p-6 inside cards and containers.",
+    "touch_targets": "Minimum 48px height (h-12) for all interactive elements (buttons, inputs, list items) to ensure mobile tap accuracy.",
+    "borders_and_radius": "Use pill shapes (rounded-full) for buttons and tags. Use rounded-2xl or rounded-3xl for cards/bottom sheets."
+  },
+  "component_guidelines": {
+    "buttons": "Pill shape (rounded-full). Primary uses brand green. Must have clear hover/active states.",
+    "inputs": "Must use text-base (16px) to prevent iOS auto-zoom. Minimal borders, slight gray background (bg-gray-50) when resting.",
+    "bottom_nav": "Fixed bottom, z-50, backdrop-blur-xl bg-white/90, 1px top border (border-gray-200). Active tab uses primary green.",
+    "cards": "Flat background (bg-white), 1px subtle border (border-gray-200), minimal shadow (shadow-sm). Avoid heavy drop-shadows.",
+    "lists": "Dense list items for CRM. Left avatar (2-letter CAPS tag), title (party name), subtitle (city/state). Right-aligned action (call/message).",
+    "chat_preview": "Use the provided whatsapp_doodle_bg as a background for the preview container. Message bubbles should be rounded (WhatsApp style: rounded-2xl with one sharp corner) and use #DCF8C6 for outgoing."
+  },
+  "motion_and_interactions": {
+    "micro_interactions": "Subtle scale-down on button press (active:scale-95).",
+    "transitions": "Slide-up for bottom sheets. Quick fade for tab switching.",
+    "loading": "Skeleton loaders for CRM list. Circular progress for WhatsApp broadcast."
+  },
+  "icons": {
+    "library": "lucide-react",
+    "usage": "Use stroke-width 2. Consistent sizing (w-5 h-5 or w-6 h-6)."
+  },
+  "media": {
+    "images": [
+      {
+        "category": "brand_logo",
+        "description": "Veer Electrical official brand logo. Used in header, login, or settings.",
+        "url": "https://static.prod-images.emergentagent.com/jobs/d3dbf7dc-9ec0-48af-b088-11605ddacdfc/images/d4f329d8aeacdc9046971f536b1a03e87bdb9110faccec1c6f96f065169f7494.png"
+      },
+      {
+        "category": "background",
+        "description": "WhatsApp-style doodle background for the bot message template preview section.",
+        "url": "https://static.prod-images.emergentagent.com/jobs/d3dbf7dc-9ec0-48af-b088-11605ddacdfc/images/d1d348a8e79884818c379762ce1b1816c1c0eea285a847c76ece27f661a62715.png"
+      }
+    ]
+  },
+  "accessibility_and_testing": {
+    "contrast": "Ensure green buttons have white text (sufficient contrast).",
+    "testing": "All interactive and key informational elements MUST include a 'data-testid' attribute (e.g., data-testid='broadcast-submit-button')."
+  },
+  "instructions_to_main_agent": [
+    "Use standard HTML/Tailwind for structural layouts.",
+    "Customize Shadcn components heavily to match the mobile-native pill/rounded aesthetic.",
+    "Implement a Bottom Navigation Bar for the primary routes (Broadcaster, CRM, Catalog, Bot, Senders, Settings).",
+    "For the Bot Message preview, use the whatsapp_doodle_bg image as the container background, and style bubbles like native WhatsApp.",
+    "Ensure the layout prevents horizontal scrolling on mobile.",
+    "Do not use card components excessively. Go for cardless, flat, or minimal border styles with white backgrounds over the gray app background (#F0F2F5).",
+    "Write components as .js (or .jsx) files, avoiding TypeScript syntax as the environment uses JavaScript."
+  ]
+}
