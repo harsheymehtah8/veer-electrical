@@ -11,12 +11,19 @@ export default function Senders() {
   const [newLabel, setNewLabel] = useState("");
   const [newPhone, setNewPhone] = useState("");
   const [scanning, setScanning] = useState(null);
+  const [worker, setWorker] = useState({ online: false });
 
   const load = async () => {
     const r = await api.get("/senders");
     setSenders(r.data);
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    const tick = async () => { try { const r = await api.get("/whatsapp/worker-status"); setWorker(r.data); } catch {} };
+    tick();
+    const id = setInterval(tick, 5000);
+    return () => clearInterval(id);
+  }, []);
 
   const add = async () => {
     if (!newLabel.trim()) return;
@@ -47,9 +54,15 @@ export default function Senders() {
 
   return (
     <div className="space-y-4" data-testid="senders-page">
-      <div className="pt-2">
-        <h1 className="font-[Manrope] text-3xl font-bold tracking-tight text-gray-900">Senders</h1>
-        <p className="text-sm text-gray-500">WhatsApp sender numbers (simulated)</p>
+      <div className="pt-2 flex items-end justify-between">
+        <div>
+          <h1 className="font-[Manrope] text-3xl font-bold tracking-tight text-gray-900">Senders</h1>
+          <p className="text-sm text-gray-500">WhatsApp sender numbers</p>
+        </div>
+        <span className={`inline-flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded-full font-medium ${worker.online ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`} data-testid="worker-pill">
+          <span className={`w-2 h-2 rounded-full ${worker.online ? "bg-emerald-500 animate-pulse" : "bg-amber-500"}`} />
+          {worker.online ? "Worker online" : "Worker offline"}
+        </span>
       </div>
 
       <div className="bg-white rounded-3xl border border-gray-200 p-3 space-y-2">

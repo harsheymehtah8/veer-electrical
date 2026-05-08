@@ -1,0 +1,15 @@
+{
+  "name": "veer-baileys-worker",
+  "version": "1.0.0",
+  "description": "Baileys WhatsApp worker for Veer Electrical dashboard",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.9",
+    "axios": "^1.7.7",
+    "qrcode-terminal": "^0.12.0",
+    "pino": "^9.4.0"
+  }
+}

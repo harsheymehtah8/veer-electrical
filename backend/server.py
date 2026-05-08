@@ -53,6 +53,7 @@ class Settings(BaseModel):
     business_name: str = "Veer Electrical"
     prefix_tag: str = "VE"
     owner_phone: str = ""
+    webhook_secret: str = Field(default_factory=lambda: uuid.uuid4().hex)
 
 class Series(BaseModel):
     id: str
@@ -501,6 +502,99 @@ async def bot_reset(phone: str):
     await db.leads.delete_many({"phone": phone})
     return {"ok": True}
 
+# ============ WHATSAPP WORKER (Baileys VPS) ============
+async def get_secret() -> str:
+    s = await db.settings.find_one({"_id": "settings"}, {"_id": 0})
+    return (s or {}).get("webhook_secret", "")
+
+async def require_worker_secret(x_webhook_secret: Optional[str] = Header(None)):
+    expected = await get_secret()
+    if not expected or x_webhook_secret != expected:
+        raise HTTPException(status_code=401, detail="Invalid webhook secret")
+    return True
+
+async def queue_outbox(phone: str, payload: Dict[str, Any]):
+    doc = {
+        "_id": new_id(),
+        "phone": phone,
+        "payload": payload,
+        "status": "pending",
+        "created_at": now_iso(),
+    }
+    await db.outbox.insert_one(doc)
+
+@api.post("/whatsapp/incoming")
+async def whatsapp_incoming(body: BotIncoming, x_webhook_secret: Optional[str] = Header(None)):
+    """Called by Baileys worker on the VPS when a customer sends a message."""
+    expected = await get_secret()
+    if not expected or x_webhook_secret != expected:
+        raise HTTPException(status_code=401, detail="Invalid webhook secret")
+    replies = await bot_process(body.phone, body.message)
+    # Queue replies for the worker to send
+    for r in replies:
+        await queue_outbox(body.phone, r)
+    # Update worker heartbeat
+    await db.worker_status.update_one(
+        {"_id": "worker"},
+        {"$set": {"last_seen": now_iso(), "online": True}},
+        upsert=True,
+    )
+    return {"queued": len(replies)}
+
+@api.get("/whatsapp/outbox")
+async def whatsapp_outbox(x_webhook_secret: Optional[str] = Header(None), limit: int = 20):
+    """Baileys worker polls this every ~2s to fetch messages to send."""
+    expected = await get_secret()
+    if not expected or x_webhook_secret != expected:
+        raise HTTPException(status_code=401, detail="Invalid webhook secret")
+    items = await db.outbox.find(
+        {"status": "pending"}, {"_id": 1, "phone": 1, "payload": 1, "created_at": 1}
+    ).sort("created_at", 1).to_list(limit)
+    # Mark as "sending" so other pollers don't grab them
+    ids = [i["_id"] for i in items]
+    if ids:
+        await db.outbox.update_many({"_id": {"$in": ids}}, {"$set": {"status": "sending"}})
+    # Heartbeat
+    await db.worker_status.update_one(
+        {"_id": "worker"},
+        {"$set": {"last_seen": now_iso(), "online": True}},
+        upsert=True,
+    )
+    return {"messages": [{"id": i["_id"], "phone": i["phone"], "payload": i["payload"]} for i in items]}
+
+@api.post("/whatsapp/ack")
+async def whatsapp_ack(body: Dict[str, Any], x_webhook_secret: Optional[str] = Header(None)):
+    """Worker confirms which outbox messages were sent (or failed)."""
+    expected = await get_secret()
+    if not expected or x_webhook_secret != expected:
+        raise HTTPException(status_code=401, detail="Invalid webhook secret")
+    sent_ids = body.get("sent", [])
+    failed_ids = body.get("failed", [])
+    if sent_ids:
+        await db.outbox.update_many({"_id": {"$in": sent_ids}}, {"$set": {"status": "sent", "sent_at": now_iso()}})
+    if failed_ids:
+        await db.outbox.update_many({"_id": {"$in": failed_ids}}, {"$set": {"status": "failed", "failed_at": now_iso()}})
+    return {"ok": True}
+
+@api.get("/whatsapp/worker-status")
+async def worker_status():
+    s = await db.worker_status.find_one({"_id": "worker"}, {"_id": 0}) or {}
+    last_seen = s.get("last_seen")
+    online = False
+    if last_seen:
+        try:
+            ts = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
+            online = (datetime.now(timezone.utc) - ts).total_seconds() < 30
+        except Exception:
+            online = False
+    return {"online": online, "last_seen": last_seen}
+
+@api.post("/whatsapp/regenerate-secret")
+async def regenerate_secret():
+    new_secret = uuid.uuid4().hex
+    await db.settings.update_one({"_id": "settings"}, {"$set": {"webhook_secret": new_secret}})
+    return {"webhook_secret": new_secret}
+
 # ============ BROADCAST ============
 @api.post("/broadcast/parse-excel")
 async def parse_excel(file: UploadFile = File(...)):
@@ -639,6 +733,11 @@ async def seed_if_empty():
     # Settings
     if not await db.settings.find_one({"_id": "settings"}):
         await db.settings.insert_one({"_id": "settings", **Settings().model_dump()})
+    else:
+        # Backfill webhook_secret on older settings docs
+        s = await db.settings.find_one({"_id": "settings"}, {"_id": 0})
+        if not s.get("webhook_secret"):
+            await db.settings.update_one({"_id": "settings"}, {"$set": {"webhook_secret": uuid.uuid4().hex}})
 
     # Templates
     existing = await db.templates.count_documents({})
