@@ -103,7 +103,15 @@ export default function Settings() {
       </div>
 
       {/* Quick links */}
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 gap-2">
+        <button onClick={() => nav("/queue")} className="bg-white border border-gray-200 rounded-2xl p-3 text-left press-fx" data-testid="quick-queue">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            <span className="text-xs font-semibold uppercase tracking-wider text-emerald-700">LIVE</span>
+          </div>
+          <div className="text-sm font-semibold">Blast Queue</div>
+          <div className="text-[11px] text-gray-500">See pending / sent / failed</div>
+        </button>
         <button onClick={() => nav("/senders")} className="bg-white border border-gray-200 rounded-2xl p-3 text-left press-fx" data-testid="quick-senders">
           <Radio className="w-5 h-5 text-emerald-600 mb-2" />
           <div className="text-xs font-semibold">Senders</div>

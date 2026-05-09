@@ -670,6 +670,48 @@ async def whatsapp_ack(body: Dict[str, Any], x_webhook_secret: Optional[str] = H
                 await db.broadcasts.update_one({"_id": doc["broadcast_id"]}, {"$inc": {"failed": 1}})
     return {"ok": True}
 
+@api.get("/whatsapp/queue/stats")
+async def queue_stats():
+    """Counts of pending/sending/sent/failed messages, plus per-sender breakdown."""
+    pipeline = [
+        {"$group": {"_id": {"sender": "$sender_id", "status": "$status"}, "count": {"$sum": 1}}},
+    ]
+    rows = await db.outbox.aggregate(pipeline).to_list(1000)
+    by_sender = {}
+    totals = {"pending": 0, "sending": 0, "sent": 0, "failed": 0}
+    for r in rows:
+        sender = (r["_id"].get("sender") or "default")
+        status = r["_id"].get("status")
+        by_sender.setdefault(sender, {"pending": 0, "sending": 0, "sent": 0, "failed": 0})
+        if status in by_sender[sender]:
+            by_sender[sender][status] = r["count"]
+            totals[status] = totals.get(status, 0) + r["count"]
+    return {"totals": totals, "by_sender": by_sender}
+
+@api.get("/whatsapp/queue/recent")
+async def queue_recent(limit: int = 50):
+    """Most recent outbox entries across all statuses."""
+    items = await db.outbox.find(
+        {},
+        {"_id": 1, "phone": 1, "payload": 1, "sender_id": 1, "status": 1, "created_at": 1, "sent_at": 1, "failed_at": 1, "broadcast_id": 1},
+    ).sort("created_at", -1).to_list(limit)
+    out = []
+    for it in items:
+        p = it.get("payload") or {}
+        out.append({
+            "id": it["_id"],
+            "phone": it.get("phone"),
+            "sender_id": it.get("sender_id"),
+            "status": it.get("status"),
+            "type": p.get("type"),
+            "preview": (p.get("text") or p.get("filename") or "")[:80],
+            "created_at": it.get("created_at"),
+            "sent_at": it.get("sent_at"),
+            "failed_at": it.get("failed_at"),
+            "broadcast_id": it.get("broadcast_id"),
+        })
+    return out
+
 @api.get("/whatsapp/worker-status")
 async def worker_status():
     """Aggregate status across all senders."""

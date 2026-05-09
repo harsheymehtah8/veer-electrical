@@ -116,6 +116,14 @@ export default function Broadcaster() {
           <h1 className="font-[Manrope] text-3xl font-bold tracking-tight text-gray-900">Blast</h1>
           <p className="text-sm text-gray-500">Send WhatsApp message to up to 50 contacts</p>
         </div>
+        <button
+          onClick={() => window.location.assign("/queue")}
+          className="inline-flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded-full bg-emerald-50 text-emerald-700 font-medium border border-emerald-200 press-fx"
+          data-testid="view-queue-btn"
+        >
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+          Live Queue
+        </button>
       </div>
 
       {/* Contacts source */}

@@ -9,6 +9,7 @@ import BotMessages from "@/pages/BotMessages";
 import Senders from "@/pages/Senders";
 import Settings from "@/pages/Settings";
 import Simulator from "@/pages/Simulator";
+import Queue from "@/pages/Queue";
 import AppLayout from "@/components/AppLayout";
 
 const RequireAuth = ({ children }) => {
@@ -39,6 +40,7 @@ function App() {
           <Route path="/senders" element={<Senders />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/simulator" element={<Simulator />} />
+          <Route path="/queue" element={<Queue />} />
         </Route>
       </Routes>
     </BrowserRouter>
