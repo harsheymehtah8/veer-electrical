@@ -18,6 +18,8 @@ export default function Broadcaster() {
   const [job, setJob] = useState(null);
   const [savedLeads, setSavedLeads] = useState([]);
   const [pickerSel, setPickerSel] = useState({});
+  const [senders, setSenders] = useState([]);
+  const [pickedSender, setPickedSender] = useState("auto");
   const fileInput = useRef(null);
   const attachInput = useRef(null);
   const pollRef = useRef(null);
@@ -25,6 +27,10 @@ export default function Broadcaster() {
   useEffect(() => {
     if (tab === "leads") api.get("/leads").then((r) => setSavedLeads(r.data));
   }, [tab]);
+
+  useEffect(() => {
+    api.get("/senders").then((r) => setSenders(r.data));
+  }, []);
 
   useEffect(() => {
     if (job && job.status !== "done") {
@@ -77,9 +83,10 @@ export default function Broadcaster() {
       mode,
       attachment_id: attachment?.id,
       attachment_name: attachment?.name,
+      sender_id: pickedSender !== "auto" ? pickedSender : undefined,
     });
     setJob(r.data);
-    toast.success("Blast started");
+    toast.success("Blast queued");
   };
 
   const pause = async () => {
@@ -207,6 +214,41 @@ export default function Broadcaster() {
             </span>
           )}
         </div>
+      </div>
+
+      {/* Send from (sender picker) */}
+      <div className="bg-white rounded-3xl border border-gray-200 p-4">
+        <h2 className="font-[Manrope] text-base font-semibold mb-3">Send from</h2>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => setPickedSender("auto")}
+            data-testid="sender-auto"
+            className={`rounded-full px-4 h-10 text-sm border press-fx ${pickedSender === "auto" ? "border-emerald-600 bg-emerald-50 text-emerald-700 font-semibold" : "border-gray-200 bg-white text-gray-600"}`}
+          >
+            Auto (use Mode A/B)
+          </button>
+          {senders.map((s) => {
+            const online = s.last_seen && (Date.now() - new Date(s.last_seen).getTime()) < 30000;
+            return (
+              <button
+                key={s.id}
+                onClick={() => setPickedSender(s.id)}
+                data-testid={`sender-pick-${s.id}`}
+                disabled={!online}
+                className={`rounded-full px-4 h-10 text-sm border press-fx ${pickedSender === s.id ? "border-emerald-600 bg-emerald-50 text-emerald-700 font-semibold" : "border-gray-200 bg-white text-gray-600"} ${!online ? "opacity-40" : ""}`}
+              >
+                <span className={`inline-block w-2 h-2 rounded-full mr-1.5 ${online ? "bg-emerald-500" : "bg-gray-400"}`}></span>
+                {s.label || s.id}
+                {s.phone && <span className="text-[10px] text-gray-400 ml-1">+{s.phone.slice(-4)}</span>}
+              </button>
+            );
+          })}
+        </div>
+        {pickedSender !== "auto" && (
+          <p className="text-[11px] text-amber-600 mt-2">
+            Forced single sender — Mode A/B is overridden, all messages go via this one number.
+          </p>
+        )}
       </div>
 
       {/* Mode toggle */}

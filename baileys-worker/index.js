@@ -1,8 +1,9 @@
-// Veer Electrical — Baileys WhatsApp Worker
-// Runs on your Oracle VPS. Connects your WhatsApp number via QR scan,
-// forwards incoming messages to the dashboard, and sends outgoing messages from the queue.
+// Veer Electrical — Baileys WhatsApp Worker v2 (Multi-sender)
+// Each instance has a unique SENDER_ID and links to its own SIM.
+// Run multiple instances on the same VPS for multi-SIM blasting.
 
 require("dotenv").config();
+const path = require("path");
 const {
   default: makeWASocket,
   useMultiFileAuthState,
@@ -15,9 +16,11 @@ const pino = require("pino");
 
 const VEER_API_URL = process.env.VEER_API_URL?.replace(/\/$/, "");
 const SECRET = process.env.WEBHOOK_SECRET;
+const SENDER_ID = process.env.SENDER_ID || "default";
+const SENDER_LABEL = process.env.SENDER_LABEL || `Sender ${SENDER_ID}`;
 const POLL_MS = parseInt(process.env.POLL_INTERVAL_MS || "2000", 10);
 
-if (!VEER_API_URL || !SECRET || SECRET === "PASTE_YOUR_SECRET_HERE") {
+if (!VEER_API_URL || !SECRET) {
   console.error("❌ Set VEER_API_URL and WEBHOOK_SECRET in .env first.");
   process.exit(1);
 }
@@ -27,11 +30,16 @@ const veer = axios.create({
   headers: { "X-Webhook-Secret": SECRET, "Content-Type": "application/json" },
   timeout: 15000,
 });
-
 const logger = pino({ level: "warn" });
 
+// Each sender has its own auth folder so multiple workers don't clash
+const AUTH_FOLDER = `auth_session_${SENDER_ID}`;
+
 async function start() {
-  const { state, saveCreds } = await useMultiFileAuthState("auth_session");
+  console.log(`🚀 Starting Baileys worker — SENDER_ID=${SENDER_ID}, label=${SENDER_LABEL}`);
+  console.log(`   Auth folder: ${AUTH_FOLDER}`);
+
+  const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
   const { version } = await fetchLatestBaileysVersion();
 
   const sock = makeWASocket({
@@ -39,23 +47,34 @@ async function start() {
     auth: state,
     logger,
     printQRInTerminal: false,
-    browser: ["VeerElectrical", "Chrome", "1.0.0"],
+    browser: ["VeerElectrical", "Chrome", SENDER_ID],
   });
 
   sock.ev.on("creds.update", saveCreds);
 
-  sock.ev.on("connection.update", (u) => {
+  sock.ev.on("connection.update", async (u) => {
     const { connection, lastDisconnect, qr } = u;
     if (qr) {
-      console.log("\n📱 Scan this QR with your WhatsApp (Settings → Linked Devices → Link a Device):\n");
+      console.log(`\n📱 [${SENDER_ID}] SCAN THIS QR with WhatsApp (Settings -> Linked Devices -> Link a Device):\n`);
       qrcode.generate(qr, { small: true });
     }
     if (connection === "open") {
-      console.log("✅ WhatsApp connected. Worker is live.");
+      const myNumber = sock.user?.id?.split(":")[0]?.split("@")[0] || "";
+      console.log(`✅ [${SENDER_ID}] WhatsApp connected as +${myNumber}. Worker LIVE.`);
+      // Register sender in dashboard
+      try {
+        await veer.post("/api/whatsapp/register", {
+          sender_id: SENDER_ID,
+          phone: myNumber,
+          label: SENDER_LABEL,
+        });
+      } catch (e) {
+        console.error(`❌ [${SENDER_ID}] Register failed:`, e.message);
+      }
     }
     if (connection === "close") {
       const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-      console.log("⚠️ Connection closed.", shouldReconnect ? "Reconnecting..." : "Logged out.");
+      console.log(`⚠️ [${SENDER_ID}] Closed.`, shouldReconnect ? "Reconnecting..." : "Logged out — delete auth folder and restart to re-link.");
       if (shouldReconnect) start();
     }
   });
@@ -66,7 +85,7 @@ async function start() {
     for (const m of messages) {
       if (m.key.fromMe) continue;
       const remote = m.key.remoteJid || "";
-      if (!remote.endsWith("@s.whatsapp.net")) continue; // ignore groups/status
+      if (!remote.endsWith("@s.whatsapp.net")) continue;
       const phone = remote.split("@")[0];
       const text =
         m.message?.conversation ||
@@ -75,18 +94,18 @@ async function start() {
         "";
       if (!text) continue;
       try {
-        await veer.post("/api/whatsapp/incoming", { phone, message: text });
-        console.log(`📥 ${phone}: ${text.slice(0, 60)}`);
+        await veer.post("/api/whatsapp/incoming", { phone, message: text, sender_id: SENDER_ID });
+        console.log(`📥 [${SENDER_ID}] ${phone}: ${text.slice(0, 60)}`);
       } catch (e) {
-        console.error("❌ Forward failed:", e.response?.data || e.message);
+        console.error(`❌ [${SENDER_ID}] Forward failed:`, e.response?.data || e.message);
       }
     }
   });
 
-  // ---- Poll outbox → send queued replies ----
+  // ---- Poll outbox for messages tagged with MY sender_id ----
   setInterval(async () => {
     try {
-      const r = await veer.get("/api/whatsapp/outbox", { params: { limit: 20 } });
+      const r = await veer.get("/api/whatsapp/outbox", { params: { sender_id: SENDER_ID, limit: 20 } });
       const msgs = r.data.messages || [];
       const sent = [];
       const failed = [];
@@ -97,7 +116,6 @@ async function start() {
           if (p.type === "text") {
             await sock.sendMessage(jid, { text: p.text });
           } else if (p.type === "pdf" && p.file_id) {
-            // Download PDF from dashboard and send as document
             const pdfUrl = `${VEER_API_URL}/api/files/${p.file_id}`;
             const pdfRes = await axios.get(pdfUrl, { responseType: "arraybuffer" });
             await sock.sendMessage(jid, {
@@ -107,26 +125,25 @@ async function start() {
             });
           }
           sent.push(item.id);
-          console.log(`📤 ${item.phone}: ${p.type}`);
-          // Small natural delay between sends (anti-ban)
-          await new Promise((res) => setTimeout(res, 800 + Math.random() * 1200));
+          console.log(`📤 [${SENDER_ID}] ${item.phone}: ${p.type}`);
+          // Anti-ban: random 8-25s for blast messages, 1-3s for bot replies
+          const isBlast = !!p.broadcast_id;
+          const delay = isBlast
+            ? 8000 + Math.random() * 17000
+            : 1000 + Math.random() * 2000;
+          await new Promise((res) => setTimeout(res, delay));
         } catch (e) {
-          console.error("❌ Send failed:", e.message);
+          console.error(`❌ [${SENDER_ID}] Send failed:`, e.message);
           failed.push(item.id);
         }
       }
       if (sent.length || failed.length) {
-        await veer.post("/api/whatsapp/ack", { sent, failed });
+        await veer.post("/api/whatsapp/ack", { sent, failed, sender_id: SENDER_ID });
       }
     } catch (e) {
-      // swallow - dashboard might be temporarily unreachable
+      // dashboard temporarily unreachable
     }
   }, POLL_MS);
-
-  // Heartbeat ping (in case there's no traffic)
-  setInterval(async () => {
-    try { await veer.get("/api/whatsapp/outbox", { params: { limit: 0 } }); } catch {}
-  }, 15000);
 }
 
 start().catch((e) => { console.error(e); process.exit(1); });

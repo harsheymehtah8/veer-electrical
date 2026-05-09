@@ -91,9 +91,11 @@ class Sender(BaseModel):
     id: str
     label: str
     phone: str
-    status: str = "Healthy"  # Healthy, Caution, Risk
+    status: str = "Healthy"  # Healthy, Caution, Risk, Disconnected
     daily_sent: int = 0
     daily_cap: int = 50
+    last_seen: Optional[str] = None
+    online: bool = False
 
 class Template(BaseModel):
     id: str
@@ -531,11 +533,16 @@ async def require_worker_secret(x_webhook_secret: Optional[str] = Header(None)):
         raise HTTPException(status_code=401, detail="Invalid webhook secret")
     return True
 
-async def queue_outbox(phone: str, payload: Dict[str, Any]):
+async def queue_outbox(phone: str, payload: Dict[str, Any], sender_id: Optional[str] = None):
+    # If no sender specified, pick the first online/registered sender
+    if not sender_id:
+        s = await db.senders.find_one({"online": True}, {"_id": 0}) or await db.senders.find_one({}, {"_id": 0})
+        sender_id = s["id"] if s else "default"
     doc = {
         "_id": new_id(),
         "phone": phone,
         "payload": payload,
+        "sender_id": sender_id,
         "status": "pending",
         "created_at": now_iso(),
     }
@@ -563,71 +570,123 @@ async def remove_whitelist(phone: str):
     await db.blasted_contacts.delete_one({"_id": phone})
     return {"ok": True}
 
-@api.post("/whatsapp/incoming")
-async def whatsapp_incoming(body: BotIncoming, x_webhook_secret: Optional[str] = Header(None)):
-    """Called by Baileys worker on the VPS when a customer sends a message."""
+@api.post("/whatsapp/register")
+async def whatsapp_register(body: Dict[str, str], x_webhook_secret: Optional[str] = Header(None)):
+    """Worker calls this after QR scan to announce its phone number for its sender_id."""
     expected = await get_secret()
     if not expected or x_webhook_secret != expected:
         raise HTTPException(status_code=401, detail="Invalid webhook secret")
-    replies = await bot_process(body.phone, body.message, enforce_blast_filter=True)
-    # Queue replies for the worker to send via WhatsApp
+    sender_id = body.get("sender_id") or "default"
+    phone = body.get("phone") or ""
+    label = body.get("label") or f"Sender ({phone[-4:]})" if phone else f"Sender {sender_id}"
+    await db.senders.update_one(
+        {"_id": sender_id},
+        {"$set": {
+            "id": sender_id, "phone": phone, "label": label,
+            "status": "Healthy", "online": True, "last_seen": now_iso(),
+        }, "$setOnInsert": {"daily_sent": 0, "daily_cap": 50}},
+        upsert=True,
+    )
+    return {"ok": True, "sender_id": sender_id}
+
+@api.post("/whatsapp/incoming")
+async def whatsapp_incoming(body: Dict[str, Any], x_webhook_secret: Optional[str] = Header(None)):
+    """Called by Baileys worker when a customer sends a message."""
+    expected = await get_secret()
+    if not expected or x_webhook_secret != expected:
+        raise HTTPException(status_code=401, detail="Invalid webhook secret")
+    phone = body.get("phone", "")
+    message = body.get("message", "")
+    received_by = body.get("sender_id") or "default"
+    replies = await bot_process(phone, message, enforce_blast_filter=True)
+    # Determine which sender should reply: the one who originally blasted them (if known), else the receiver
+    bc = await db.blasted_contacts.find_one({"_id": phone})
+    reply_sender = (bc or {}).get("sender_id") or received_by
     for r in replies:
-        await queue_outbox(body.phone, r)
-    # Update worker heartbeat
-    await db.worker_status.update_one(
-        {"_id": "worker"},
+        await queue_outbox(phone, r, sender_id=reply_sender)
+    # Sender heartbeat
+    await db.senders.update_one(
+        {"_id": received_by},
         {"$set": {"last_seen": now_iso(), "online": True}},
         upsert=True,
     )
-    return {"queued": len(replies)}
+    return {"queued": len(replies), "reply_sender": reply_sender}
 
 @api.get("/whatsapp/outbox")
-async def whatsapp_outbox(x_webhook_secret: Optional[str] = Header(None), limit: int = 20):
-    """Baileys worker polls this every ~2s to fetch messages to send."""
+async def whatsapp_outbox(
+    x_webhook_secret: Optional[str] = Header(None),
+    sender_id: Optional[str] = None,
+    limit: int = 20,
+):
+    """Baileys worker polls this every ~2s for messages tagged for its sender_id."""
     expected = await get_secret()
     if not expected or x_webhook_secret != expected:
         raise HTTPException(status_code=401, detail="Invalid webhook secret")
+    sid = sender_id or "default"
+    # Auto-register sender if first time we're seeing it (handles v1 workers w/o /register)
+    await db.senders.update_one(
+        {"_id": sid},
+        {"$set": {"id": sid, "last_seen": now_iso(), "online": True},
+         "$setOnInsert": {"label": f"Sender {sid}", "phone": "", "status": "Healthy", "daily_sent": 0, "daily_cap": 50}},
+        upsert=True,
+    )
+    # Backward compat: when polling as 'default', also pick up old docs that had no sender_id
+    if sid == "default":
+        query = {"status": "pending", "$or": [{"sender_id": "default"}, {"sender_id": {"$exists": False}}]}
+    else:
+        query = {"status": "pending", "sender_id": sid}
     items = await db.outbox.find(
-        {"status": "pending"}, {"_id": 1, "phone": 1, "payload": 1, "created_at": 1}
+        query,
+        {"_id": 1, "phone": 1, "payload": 1, "created_at": 1, "sender_id": 1},
     ).sort("created_at", 1).to_list(limit)
-    # Mark as "sending" so other pollers don't grab them
     ids = [i["_id"] for i in items]
     if ids:
         await db.outbox.update_many({"_id": {"$in": ids}}, {"$set": {"status": "sending"}})
-    # Heartbeat
-    await db.worker_status.update_one(
-        {"_id": "worker"},
-        {"$set": {"last_seen": now_iso(), "online": True}},
-        upsert=True,
-    )
     return {"messages": [{"id": i["_id"], "phone": i["phone"], "payload": i["payload"]} for i in items]}
 
 @api.post("/whatsapp/ack")
 async def whatsapp_ack(body: Dict[str, Any], x_webhook_secret: Optional[str] = Header(None)):
-    """Worker confirms which outbox messages were sent (or failed)."""
+    """Worker confirms which outbox messages were sent or failed."""
     expected = await get_secret()
     if not expected or x_webhook_secret != expected:
         raise HTTPException(status_code=401, detail="Invalid webhook secret")
     sent_ids = body.get("sent", [])
     failed_ids = body.get("failed", [])
+    sender_id = body.get("sender_id")
     if sent_ids:
         await db.outbox.update_many({"_id": {"$in": sent_ids}}, {"$set": {"status": "sent", "sent_at": now_iso()}})
+        if sender_id:
+            await db.senders.update_one({"_id": sender_id}, {"$inc": {"daily_sent": len(sent_ids)}})
+        # Also mark broadcast progress
+        for sid in sent_ids:
+            doc = await db.outbox.find_one({"_id": sid}, {"broadcast_id": 1})
+            if doc and doc.get("broadcast_id"):
+                await db.broadcasts.update_one({"_id": doc["broadcast_id"]}, {"$inc": {"sent": 1}})
     if failed_ids:
         await db.outbox.update_many({"_id": {"$in": failed_ids}}, {"$set": {"status": "failed", "failed_at": now_iso()}})
+        for sid in failed_ids:
+            doc = await db.outbox.find_one({"_id": sid}, {"broadcast_id": 1})
+            if doc and doc.get("broadcast_id"):
+                await db.broadcasts.update_one({"_id": doc["broadcast_id"]}, {"$inc": {"failed": 1}})
     return {"ok": True}
 
 @api.get("/whatsapp/worker-status")
 async def worker_status():
-    s = await db.worker_status.find_one({"_id": "worker"}, {"_id": 0}) or {}
-    last_seen = s.get("last_seen")
-    online = False
-    if last_seen:
-        try:
-            ts = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
-            online = (datetime.now(timezone.utc) - ts).total_seconds() < 30
-        except Exception:
-            online = False
-    return {"online": online, "last_seen": last_seen}
+    """Aggregate status across all senders."""
+    senders = await db.senders.find({}, {"_id": 0}).to_list(50)
+    any_online = False
+    for s in senders:
+        ls = s.get("last_seen")
+        if ls:
+            try:
+                ts = datetime.fromisoformat(ls.replace("Z", "+00:00"))
+                if (datetime.now(timezone.utc) - ts).total_seconds() < 30:
+                    any_online = True
+                    break
+            except Exception:
+                pass
+    last_seen = max([s.get("last_seen") for s in senders if s.get("last_seen")], default=None)
+    return {"online": any_online, "last_seen": last_seen, "sender_count": len(senders)}
 
 @api.post("/whatsapp/regenerate-secret")
 async def regenerate_secret():
@@ -695,50 +754,74 @@ async def run_broadcast(job_id: str):
     job = await db.broadcasts.find_one({"_id": job_id})
     if not job:
         return
-    senders = await db.senders.find({}, {"_id": 0}).to_list(100)
+    # Only use ONLINE senders, or specific sender_id if provided
+    forced_sender = job.get("sender_id")
+    if forced_sender:
+        senders = await db.senders.find({"_id": forced_sender}, {"_id": 0}).to_list(10)
+    else:
+        senders = await db.senders.find({"online": True}, {"_id": 0}).to_list(50)
     if not senders:
-        senders = [{"id": "default", "label": "Default", "phone": "0000000000"}]
+        # Fall back to any registered sender
+        senders = await db.senders.find({}, {"_id": 0}).to_list(50)
+    if not senders:
+        await db.broadcasts.update_one({"_id": job_id}, {"$set": {"status": "failed", "error": "No senders available"}})
+        return
     contacts = job["contacts"]
     mode = job["mode"]
-    # Mark every contact as a "blasted" number — bot will only engage with these
-    for c in contacts:
-        ph = (c.get("phone") or "").strip()
-        if ph:
-            await db.blasted_contacts.update_one(
-                {"_id": ph},
-                {"$set": {"last_blasted_at": now_iso()}, "$setOnInsert": {"first_blasted_at": now_iso()}},
-                upsert=True,
-            )
+    text = job.get("message", "") or ""
+    attach_id = job.get("attachment_id")
+    attach_name = job.get("attachment_name")
     total_msgs = len(contacts) * (len(senders) if mode == "B" else 1)
-    await db.broadcasts.update_one({"_id": job_id}, {"$set": {"status": "running", "total": total_msgs}})
-    sent = 0
-    failed = 0
-    progress = []
+    await db.broadcasts.update_one({"_id": job_id}, {"$set": {"status": "running", "total": total_msgs, "sent": 0, "failed": 0}})
+
+    def make_payloads():
+        out = []
+        if text.strip():
+            out.append({"type": "text", "text": text})
+        if attach_id:
+            # If attachment is a PDF, send as document; otherwise still document send
+            out.append({"type": "pdf", "file_id": attach_id, "filename": attach_name or "file.pdf"})
+        return out
+
+    payloads = make_payloads()
+    if not payloads:
+        await db.broadcasts.update_one({"_id": job_id}, {"$set": {"status": "failed", "error": "Empty message"}})
+        return
+
     for i, contact in enumerate(contacts):
-        # Stop if paused
         cur = await db.broadcasts.find_one({"_id": job_id})
         if cur and cur.get("status") == "paused":
             return
+        ph = (contact.get("phone") or "").strip()
+        if not ph:
+            continue
         if mode == "B":
-            for s in senders:
-                await asyncio.sleep(random.uniform(0.5, 1.2))  # simulated short delay for demo
-                ok = random.random() > 0.05
-                if ok:
-                    sent += 1
-                else:
-                    failed += 1
-                progress.append({"phone": contact["phone"], "sender": s.get("label", ""), "ok": ok, "ts": now_iso()})
+            assigned_senders = senders
         else:
-            s = senders[i % len(senders)]
-            await asyncio.sleep(random.uniform(0.5, 1.2))
-            ok = random.random() > 0.05
-            if ok:
-                sent += 1
-            else:
-                failed += 1
-            progress.append({"phone": contact["phone"], "sender": s.get("label", ""), "ok": ok, "ts": now_iso()})
-        await db.broadcasts.update_one({"_id": job_id}, {"$set": {"sent": sent, "failed": failed, "progress": progress[-200:]}})
-    await db.broadcasts.update_one({"_id": job_id}, {"$set": {"status": "done"}})
+            assigned_senders = [senders[i % len(senders)]]
+        for s in assigned_senders:
+            for p in payloads:
+                doc = {
+                    "_id": new_id(),
+                    "phone": ph,
+                    "payload": p,
+                    "sender_id": s["id"],
+                    "status": "pending",
+                    "broadcast_id": job_id,
+                    "created_at": now_iso(),
+                }
+                await db.outbox.insert_one(doc)
+            # Tag this contact as blasted by this sender (first sender wins for Mode B)
+            await db.blasted_contacts.update_one(
+                {"_id": ph},
+                {"$set": {"last_blasted_at": now_iso()},
+                 "$setOnInsert": {"first_blasted_at": now_iso(), "sender_id": s["id"]}},
+                upsert=True,
+            )
+        # Small async pause so we don't dump 50*N rows in 1ms (helps DB)
+        await asyncio.sleep(0.05)
+    # Mark queued; actual send count comes from worker acks
+    await db.broadcasts.update_one({"_id": job_id}, {"$set": {"status": "queued_to_workers"}})
 
 @api.post("/broadcast/start")
 async def start_broadcast(payload: Dict[str, Any], background_tasks: BackgroundTasks):
@@ -755,6 +838,10 @@ async def start_broadcast(payload: Dict[str, Any], background_tasks: BackgroundT
         total=len(contacts),
         created_at=now_iso(),
     ).model_dump()
+    # Optional: force a single sender
+    sender_id = payload.get("sender_id")
+    if sender_id:
+        job["sender_id"] = sender_id
     await db.broadcasts.insert_one({"_id": job["id"], **job})
     background_tasks.add_task(run_broadcast, job["id"])
     return job
@@ -813,11 +900,9 @@ async def seed_if_empty():
                 r["brands"].append(brand)
             await db.ranges.insert_one({"_id": r["id"], **r})
 
-    # Seed 2 senders
-    if await db.senders.count_documents({}) == 0:
-        for i, label in enumerate(["Sender 1 (Jio)", "Sender 2 (Airtel)"]):
-            s = Sender(id=new_id(), label=label, phone="", status="Disconnected").model_dump()
-            await db.senders.insert_one({"_id": s["id"], **s})
+    # Senders are now self-registered by Baileys workers when they scan QR. No seed needed.
+    # Cleanup: remove any legacy seeded sender docs (empty phone + Disconnected status)
+    await db.senders.delete_many({"phone": "", "status": "Disconnected"})
 
 
 @app.on_event("startup")
