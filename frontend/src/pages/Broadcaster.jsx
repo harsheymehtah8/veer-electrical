@@ -29,7 +29,10 @@ export default function Broadcaster() {
   }, [tab]);
 
   useEffect(() => {
-    api.get("/senders").then((r) => setSenders(r.data));
+    const loadSenders = () => api.get("/senders").then((r) => setSenders(r.data)).catch(() => {});
+    loadSenders();
+    const id = setInterval(loadSenders, 5000);
+    return () => clearInterval(id);
   }, []);
 
   useEffect(() => {
