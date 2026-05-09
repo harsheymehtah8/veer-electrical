@@ -3,11 +3,12 @@ import { useNavigate } from "react-router-dom";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
-import { LogOut, Send, Radio, Bot, Copy, RefreshCw, ShieldCheck, Eye, EyeOff } from "lucide-react";
+import { LogOut, Send, Radio, Bot, Copy, RefreshCw, ShieldCheck, Eye, EyeOff, Power } from "lucide-react";
 
 export default function Settings() {
-  const [s, setS] = useState({ business_name: "", prefix_tag: "", owner_phone: "", webhook_secret: "" });
+  const [s, setS] = useState({ business_name: "", prefix_tag: "", owner_phone: "", webhook_secret: "", bot_enabled: true });
   const [worker, setWorker] = useState({ online: false, last_seen: null });
   const [showSecret, setShowSecret] = useState(false);
   const nav = useNavigate();
@@ -25,6 +26,17 @@ export default function Settings() {
   const save = async () => {
     await api.put("/settings", s);
     toast.success("Saved");
+  };
+
+  const toggleBot = async (val) => {
+    setS((cur) => ({ ...cur, bot_enabled: val }));
+    try {
+      await api.post("/settings/bot-toggle", { enabled: val });
+      toast.success(val ? "Bot enabled — auto-replies ON" : "Bot paused — you'll handle replies manually");
+    } catch {
+      setS((cur) => ({ ...cur, bot_enabled: !val }));
+      toast.error("Failed to toggle bot");
+    }
   };
 
   const copySecret = () => {
@@ -65,6 +77,29 @@ export default function Settings() {
             {worker.online ? "Connected to your VPS — messages flowing" : "VPS not connected. Run the Baileys worker on Oracle."}
           </div>
         </div>
+      </div>
+
+      {/* Bot ON/OFF master toggle */}
+      <div className={`rounded-3xl border p-4 flex items-center gap-3 ${s.bot_enabled ? "bg-emerald-50 border-emerald-200" : "bg-gray-50 border-gray-300"}`} data-testid="bot-toggle-card">
+        <div className={`w-10 h-10 rounded-full flex items-center justify-center ${s.bot_enabled ? "bg-emerald-600" : "bg-gray-400"}`}>
+          <Power className="w-5 h-5 text-white" />
+        </div>
+        <div className="flex-1">
+          <div className="font-[Manrope] font-semibold text-sm">
+            Auto-Reply Bot: {s.bot_enabled ? "ON" : "PAUSED"}
+          </div>
+          <div className="text-xs text-gray-600">
+            {s.bot_enabled
+              ? "Bot replies to blasted contacts automatically"
+              : "Bot is paused — you'll reply to all customers manually"}
+          </div>
+        </div>
+        <Switch
+          checked={!!s.bot_enabled}
+          onCheckedChange={toggleBot}
+          className="data-[state=checked]:bg-emerald-600"
+          data-testid="bot-toggle-switch"
+        />
       </div>
 
       {/* Quick links */}

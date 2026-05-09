@@ -54,6 +54,7 @@ class Settings(BaseModel):
     prefix_tag: str = "VE"
     owner_phone: str = ""
     webhook_secret: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    bot_enabled: bool = True
 
 class Series(BaseModel):
     id: str
@@ -165,6 +166,12 @@ async def get_settings():
 async def update_settings(s: Settings):
     await db.settings.update_one({"_id": "settings"}, {"$set": s.model_dump()}, upsert=True)
     return s.model_dump()
+
+@api.post("/settings/bot-toggle")
+async def toggle_bot(payload: Dict[str, bool]):
+    enabled = bool(payload.get("enabled", True))
+    await db.settings.update_one({"_id": "settings"}, {"$set": {"bot_enabled": enabled}}, upsert=True)
+    return {"bot_enabled": enabled}
 
 # ============ CATALOG ============
 @api.get("/catalog")
@@ -371,6 +378,10 @@ async def bot_process(phone: str, message: str, enforce_blast_filter: bool = Fal
     replies: List[Dict[str, Any]] = []
     settings = await db.settings.find_one({"_id": "settings"}, {"_id": 0}) or Settings().model_dump()
     prefix = settings.get("prefix_tag", "VE")
+
+    # MASTER KILL SWITCH — owner can pause the bot entirely from dashboard
+    if enforce_blast_filter and settings.get("bot_enabled", True) is False:
+        return replies
 
     state = await get_state(phone)
     lead = await existing_lead(phone)
