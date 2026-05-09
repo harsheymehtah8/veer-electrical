@@ -364,7 +364,7 @@ async def existing_lead(phone: str):
 def numbered_list(items: List[str]) -> str:
     return "\n".join([f"{i+1}. {n}" for i, n in enumerate(items)])
 
-async def bot_process(phone: str, message: str) -> List[Dict[str, Any]]:
+async def bot_process(phone: str, message: str, enforce_blast_filter: bool = False) -> List[Dict[str, Any]]:
     """Returns list of bot replies. Each reply: {type: 'text'|'pdf', text/file_id/filename}"""
     msg = (message or "").strip()
     msg_lower = msg.lower()
@@ -374,6 +374,13 @@ async def bot_process(phone: str, message: str) -> List[Dict[str, Any]]:
 
     state = await get_state(phone)
     lead = await existing_lead(phone)
+
+    # GATEKEEPER: only engage with cold-blast recipients (or already-saved leads).
+    # Random unknown numbers messaging us first are silently ignored.
+    if enforce_blast_filter and not lead:
+        was_blasted = await db.blasted_contacts.find_one({"_id": phone})
+        if not was_blasted:
+            return replies  # silent
 
     # Returning customer flow
     if lead and not state:
@@ -523,14 +530,36 @@ async def queue_outbox(phone: str, payload: Dict[str, Any]):
     }
     await db.outbox.insert_one(doc)
 
+@api.get("/whitelist")
+async def list_whitelist():
+    items = await db.blasted_contacts.find({}).sort("last_blasted_at", -1).to_list(2000)
+    return {"count": len(items), "phones": [{"phone": i["_id"], "first_blasted_at": i.get("first_blasted_at"), "last_blasted_at": i.get("last_blasted_at")} for i in items]}
+
+@api.post("/whitelist")
+async def add_whitelist(payload: Dict[str, str]):
+    phone = re.sub(r'\D', '', payload.get("phone", ""))
+    if not phone:
+        raise HTTPException(400, "Phone required")
+    await db.blasted_contacts.update_one(
+        {"_id": phone},
+        {"$set": {"last_blasted_at": now_iso()}, "$setOnInsert": {"first_blasted_at": now_iso(), "manual": True}},
+        upsert=True,
+    )
+    return {"ok": True, "phone": phone}
+
+@api.delete("/whitelist/{phone}")
+async def remove_whitelist(phone: str):
+    await db.blasted_contacts.delete_one({"_id": phone})
+    return {"ok": True}
+
 @api.post("/whatsapp/incoming")
 async def whatsapp_incoming(body: BotIncoming, x_webhook_secret: Optional[str] = Header(None)):
     """Called by Baileys worker on the VPS when a customer sends a message."""
     expected = await get_secret()
     if not expected or x_webhook_secret != expected:
         raise HTTPException(status_code=401, detail="Invalid webhook secret")
-    replies = await bot_process(body.phone, body.message)
-    # Queue replies for the worker to send
+    replies = await bot_process(body.phone, body.message, enforce_blast_filter=True)
+    # Queue replies for the worker to send via WhatsApp
     for r in replies:
         await queue_outbox(body.phone, r)
     # Update worker heartbeat
@@ -660,6 +689,15 @@ async def run_broadcast(job_id: str):
         senders = [{"id": "default", "label": "Default", "phone": "0000000000"}]
     contacts = job["contacts"]
     mode = job["mode"]
+    # Mark every contact as a "blasted" number — bot will only engage with these
+    for c in contacts:
+        ph = (c.get("phone") or "").strip()
+        if ph:
+            await db.blasted_contacts.update_one(
+                {"_id": ph},
+                {"$set": {"last_blasted_at": now_iso()}, "$setOnInsert": {"first_blasted_at": now_iso()}},
+                upsert=True,
+            )
     total_msgs = len(contacts) * (len(senders) if mode == "B" else 1)
     await db.broadcasts.update_one({"_id": job_id}, {"$set": {"status": "running", "total": total_msgs}})
     sent = 0
