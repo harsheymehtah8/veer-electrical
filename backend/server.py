@@ -527,8 +527,12 @@ async def upsert_contact_from_bot(phone: str, party_name: str, city: str, state:
 
 # ============ BLAST TEMPLATES (saved outgoing message drafts) ============
 @api.get("/blast-templates")
-async def list_blast_templates():
-    items = await db.blast_templates.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+async def list_blast_templates(q: Optional[str] = None):
+    query: Dict[str, Any] = {}
+    if q:
+        rx = {"$regex": re.escape(q), "$options": "i"}
+        query["$or"] = [{"name": rx}, {"message": rx}, {"attachment_name": rx}]
+    items = await db.blast_templates.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
     return items
 
 @api.post("/blast-templates")

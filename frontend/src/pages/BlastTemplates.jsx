@@ -6,19 +6,24 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { ArrowLeft, Plus, Pencil, Trash2, Paperclip, X, FileText } from "lucide-react";
+import { ArrowLeft, Plus, Pencil, Trash2, Paperclip, X, FileText, Search } from "lucide-react";
 
 export default function BlastTemplates() {
   const [items, setItems] = useState([]);
   const [editing, setEditing] = useState(null);
+  const [q, setQ] = useState("");
   const fileRef = useRef(null);
   const nav = useNavigate();
 
   const load = async () => {
-    const r = await api.get("/blast-templates");
+    const r = await api.get("/blast-templates", { params: { q: q || undefined } });
     setItems(r.data);
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    const t = setTimeout(load, 250);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line
+  }, [q]);
 
   const openNew = () => setEditing({ name: "", message: "", attachment_id: null, attachment_name: null });
   const openEdit = (t) => setEditing({ ...t });
@@ -67,10 +72,24 @@ export default function BlastTemplates() {
         </Button>
       </div>
 
+      <div className="relative">
+        <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+        <Input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Search templates by name or message"
+          className="pl-9 h-12 rounded-full bg-white border-gray-200"
+          data-testid="tpl-search"
+        />
+      </div>
+
       <div className="space-y-2" data-testid="tpl-list">
         {items.length === 0 && (
           <div className="bg-white rounded-2xl p-8 text-center text-sm text-gray-500 border border-dashed border-gray-300">
-            No templates yet. Tap <strong>+ New</strong> to save your first one.
+            {q
+              ? <>No templates match <strong>"{q}"</strong>.</>
+              : <>No templates yet. Tap <strong>+ New</strong> to save your first one.</>
+            }
           </div>
         )}
         {items.map((t) => (
