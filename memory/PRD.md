@@ -52,6 +52,14 @@ Indian electrical-goods wholesaler needs a mobile-first dashboard to:
 - ✅ Excel export verified for Contacts and Leads (xlsx StreamingResponse, ~5KB)
 - ✅ Tests: `/app/backend/tests/test_search_export.py` — 17/17 passing
 
+## 2026-05-10 — Production bug fixes (P0)
+- ✅ **Bottom-nav iPhone overlap** fixed via `paddingBottom: calc(7rem + env(safe-area-inset-bottom))` in AppLayout
+- ✅ **Broadcaster draft persistence** — message + contacts + mode + attachment + sender persisted to `sessionStorage('ve_blast_draft')`, hydrated on mount, cleared on successful blast start. No more loss when navigating to Contacts and back.
+- ✅ **"Save as template" button** in Broadcaster — name + preview dialog, POSTs to `/api/blast-templates`
+- ✅ **Phone validation** at blast time — rejects malformed (e.g. 11-digit `99870003415`); valid numbers normalized to E.164-ish (12-digit `91XXXXXXXXXX`); response includes `invalid_numbers` list of skipped raw inputs
+- ✅ **Failure reasons surfaced** — worker now sends `failed: [{id, reason}]`, backend stores `error_reason` on outbox, Queue page renders ⚠ reason on each failed message; pre-flight `sock.onWhatsApp()` check in worker catches "Not registered on WhatsApp" before send
+- ✅ Tests: `/app/backend/tests/test_broadcast_validation_and_ack.py` — 9/9 + 7/7 frontend flows passing
+
 ## Backlog (P0/P1/P2)
 
 ### P0 (next, before scaling)
