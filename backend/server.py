@@ -380,6 +380,7 @@ async def create_contact(payload: Dict[str, str]):
         updated_at=now_iso(),
     ).model_dump()
     await db.contacts.insert_one(c)
+    c.pop("_id", None)
     return c
 
 @api.put("/contacts/{contact_id}")
@@ -512,6 +513,43 @@ async def upsert_contact_from_bot(phone: str, party_name: str, city: str, state:
             updated_at=now_iso(),
         ).model_dump()
         await db.contacts.insert_one(c)
+
+# ============ BLAST TEMPLATES (saved outgoing message drafts) ============
+@api.get("/blast-templates")
+async def list_blast_templates():
+    items = await db.blast_templates.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return items
+
+@api.post("/blast-templates")
+async def create_blast_template(payload: Dict[str, Any]):
+    name = (payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "Template name required")
+    doc = {
+        "id": new_id(),
+        "name": name,
+        "message": payload.get("message", ""),
+        "attachment_id": payload.get("attachment_id"),
+        "attachment_name": payload.get("attachment_name"),
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    }
+    await db.blast_templates.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api.put("/blast-templates/{tid}")
+async def update_blast_template(tid: str, payload: Dict[str, Any]):
+    update = {k: v for k, v in payload.items()
+             if k in ["name", "message", "attachment_id", "attachment_name"]}
+    update["updated_at"] = now_iso()
+    await db.blast_templates.update_one({"id": tid}, {"$set": update})
+    return {"ok": True}
+
+@api.delete("/blast-templates/{tid}")
+async def delete_blast_template(tid: str):
+    await db.blast_templates.delete_one({"id": tid})
+    return {"ok": True}
 
 # ============ SENDERS ============
 @api.get("/senders")

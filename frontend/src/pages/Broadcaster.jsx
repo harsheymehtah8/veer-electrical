@@ -5,8 +5,9 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Progress } from "@/components/ui/progress";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Upload, Clipboard, Users, Paperclip, Send, X, Pause } from "lucide-react";
+import { Upload, Clipboard, Users, Paperclip, Send, X, Pause, FileText, BookOpen } from "lucide-react";
 
 export default function Broadcaster() {
   const [contacts, setContacts] = useState([]);
@@ -20,6 +21,8 @@ export default function Broadcaster() {
   const [pickerSel, setPickerSel] = useState({});
   const [senders, setSenders] = useState([]);
   const [pickedSender, setPickedSender] = useState("auto");
+  const [templates, setTemplates] = useState([]);
+  const [showTplPicker, setShowTplPicker] = useState(false);
   const fileInput = useRef(null);
   const attachInput = useRef(null);
   const pollRef = useRef(null);
@@ -34,6 +37,27 @@ export default function Broadcaster() {
     const id = setInterval(loadSenders, 5000);
     return () => clearInterval(id);
   }, []);
+
+  const loadTemplates = async () => {
+    const r = await api.get("/blast-templates");
+    setTemplates(r.data);
+  };
+
+  const applyTemplate = (t) => {
+    setMessage(t.message || "");
+    if (t.attachment_id) {
+      setAttachment({ id: t.attachment_id, name: t.attachment_name });
+    } else {
+      setAttachment(null);
+    }
+    setShowTplPicker(false);
+    toast.success(`Loaded "${t.name}"`);
+  };
+
+  const openTplPicker = async () => {
+    await loadTemplates();
+    setShowTplPicker(true);
+  };
 
   useEffect(() => {
     if (job && job.status !== "done") {
@@ -208,7 +232,16 @@ export default function Broadcaster() {
 
       {/* Message + attachment */}
       <div className="bg-white rounded-3xl border border-gray-200 p-4 space-y-3">
-        <h2 className="font-[Manrope] text-base font-semibold">Message</h2>
+        <div className="flex items-center justify-between">
+          <h2 className="font-[Manrope] text-base font-semibold">Message</h2>
+          <button
+            onClick={openTplPicker}
+            className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 press-fx"
+            data-testid="use-template-btn"
+          >
+            <BookOpen className="w-3.5 h-3.5" /> Use template
+          </button>
+        </div>
         <Textarea
           value={message}
           onChange={(e) => setMessage(e.target.value)}
@@ -314,6 +347,44 @@ export default function Broadcaster() {
           )}
         </div>
       )}
+
+      {/* Template picker */}
+      <Dialog open={showTplPicker} onOpenChange={setShowTplPicker}>
+        <DialogContent className="max-w-md rounded-3xl">
+          <DialogHeader>
+            <DialogTitle>Use a saved template</DialogTitle>
+            <DialogDescription>Tap any template to load its message + attachment</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 max-h-[60vh] overflow-auto" data-testid="tpl-picker-list">
+            {templates.length === 0 && (
+              <div className="text-center text-sm text-gray-500 py-6">
+                No templates yet. <button onClick={() => { setShowTplPicker(false); window.location.assign("/blast-templates"); }} className="text-emerald-600 underline">Create one</button>
+              </div>
+            )}
+            {templates.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => applyTemplate(t)}
+                className="w-full text-left bg-gray-50 hover:bg-emerald-50 rounded-2xl p-3 border border-gray-200 press-fx"
+                data-testid={`tpl-pick-${t.id}`}
+              >
+                <div className="font-[Manrope] font-semibold text-sm">{t.name}</div>
+                {t.attachment_name && (
+                  <span className="inline-flex items-center gap-1 mt-1 text-[10px] bg-amber-50 text-amber-700 px-2 py-0.5 rounded-full">
+                    <FileText className="w-3 h-3" /> {t.attachment_name}
+                  </span>
+                )}
+                {t.message && (
+                  <div className="text-xs text-gray-600 mt-1 line-clamp-2">{t.message}</div>
+                )}
+              </button>
+            ))}
+          </div>
+          <Button onClick={() => { setShowTplPicker(false); window.location.assign("/blast-templates"); }} variant="outline" className="w-full rounded-full h-11" data-testid="manage-tpl-btn">
+            Manage templates
+          </Button>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
