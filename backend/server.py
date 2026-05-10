@@ -332,12 +332,13 @@ async def list_contacts(q: Optional[str] = None, source: Optional[str] = None,
     if q:
         digits = re.sub(r'\D', '', q)
         non_digit = re.sub(r'\d', '', q).strip()
+        qx = re.escape(q)
         or_clauses = [
-            {"name": {"$regex": q, "$options": "i"}},
-            {"shop_name": {"$regex": q, "$options": "i"}},
-            {"city": {"$regex": q, "$options": "i"}},
-            {"district": {"$regex": q, "$options": "i"}},
-            {"state": {"$regex": q, "$options": "i"}},
+            {"name": {"$regex": qx, "$options": "i"}},
+            {"shop_name": {"$regex": qx, "$options": "i"}},
+            {"city": {"$regex": qx, "$options": "i"}},
+            {"district": {"$regex": qx, "$options": "i"}},
+            {"state": {"$regex": qx, "$options": "i"}},
         ]
         # Only search mobile if input looks like a phone number (mostly digits, 4+ digits, no significant text)
         if digits and len(digits) >= 4 and len(non_digit) <= 2:
@@ -573,7 +574,7 @@ GROUP_CAP = 50
 async def list_groups(q: Optional[str] = None):
     query: Dict[str, Any] = {}
     if q:
-        query["name"] = {"$regex": q, "$options": "i"}
+        query["name"] = {"$regex": re.escape(q), "$options": "i"}
     items = await db.groups.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
     # add count + pop heavy contact_ids if not needed (keep ids for badge)
     for g in items:

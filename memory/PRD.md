@@ -41,6 +41,17 @@ Indian electrical-goods wholesaler needs a mobile-first dashboard to:
 - ✅ Bot Simulator: WhatsApp-style chat tester at `/simulator`
 - ✅ Bottom nav (5 tabs: Blast / Leads / Catalog / Bot / More)
 
+## 2026-05-10 — Global search + Templates + Groups update
+- ✅ Contacts CRM full address book (6 fields, +91 normalization, unlimited contacts, CSV/Excel import + xlsx export)
+- ✅ Bot leads upgrade existing manual contacts (no overwrite of name/shop)
+- ✅ Blast Message Templates (CRUD with attachments) at `/blast-templates`
+- ✅ Groups: max 50 per group, multi-membership, blast direct from group
+- ✅ External Baileys Node.js worker integration (webhook secret, multi-sender Mode A/B)
+- ✅ Master bot ON/OFF toggle + auto-replies gated to blasted/whitelisted numbers
+- ✅ **Global search across Contacts, Groups, Blast Templates** — uniform `q` param, debounced UI, regex-safe via `re.escape` on all 3 endpoints (2026-05-10)
+- ✅ Excel export verified for Contacts and Leads (xlsx StreamingResponse, ~5KB)
+- ✅ Tests: `/app/backend/tests/test_search_export.py` — 17/17 passing
+
 ## Backlog (P0/P1/P2)
 
 ### P0 (next, before scaling)
