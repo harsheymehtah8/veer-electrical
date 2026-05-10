@@ -1,0 +1,33 @@
+{
+  "summary": "Tested all 4 production bug fixes for the Veer Electrical app: (1) bottom-nav padding via AppLayout inline style, (2) phone validation + invalid_numbers in /api/broadcast/start, (3) Broadcaster sessionStorage draft persistence ('ve_blast_draft') across navigation, (4) new 'Save as template' dialog and (5) /api/whatsapp/ack failure-reason handling. 9/9 backend pytest tests pass (validation, normalization, legacy + new ack shape, error_reason in queue/recent, secret enforcement, regression on /api/blast-templates). 7/7 frontend flows pass on a 390x844 viewport: AppLayout root has inline paddingBottom 'calc(7rem + env(safe-area-inset-bottom, 0px))'; Start Blast button does NOT overlap bottom nav after scroll-into-view (btn y=676-732, nav y=779-844, ~47px gap); navigating Broadcaster -> /contacts -> back preserved typed message AND 2 contact chips from sessionStorage; save-as-template button disabled when message empty + no attachment, enabled when message present; dialog POSTs /api/blast-templates 200 and closes; use-template picker still loads; global tpl-search regression OK. Queue page rendered with 0 failed items so live error_reason rendering was not directly observed in UI, but backend test confirms /api/whatsapp/queue/recent surfaces error_reason and Queue.jsx renders data-testid=fail-reason-{id} conditionally on m.status==='failed' && m.error_reason.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_broadcast_validation_and_ack.py",
+    "/app/test_reports/pytest/iter3_validation_ack.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now 1371 lines — past the recommended 700-line threshold. Strongly recommend splitting into routers (auth, contacts, groups, blast_templates, broadcast, whatsapp, bot). Carrying forward from iter2.",
+    "/api/whatsapp/ack happily accepts mixed-type entries in 'failed' (string OR dict) — good for back-compat but means a typo like {'_id': 'x'} is silently dropped. Consider logging when an entry has no usable id.",
+    "Broadcaster persistence stores the full attachment object (id + name) but NOT the resolved attachment blob — if the attachment was deleted server-side, hydration on next mount silently re-uses a stale attachment_id. Low risk in single-owner MVP, but worth a TODO.",
+    "Phone validation in /broadcast/start accepts any non-Indian 12–15 digit number that doesn't start with 0 — fine for international use, but it doesn't verify the digits are a real country prefix. Could let through e.g. '123456789012'."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_broadcast_validation_and_ack.py (created, 9 tests)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "Stub OTP login: phone 9999911111, dev OTP shown on /login screen as 'Dev OTP: XXXXXX'.",
+  "seed_data_creation": "Tests create + clean up: TEST_* broadcast jobs, transient outbox+broadcast docs (deleted in same test), TEST_uitpl_<ts> blast template via UI flow (left in DB — minor).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Webhook secret for /api/whatsapp/ack lives in MongoDB settings collection ({_id:'settings'}.webhook_secret). Read via pymongo using MONGO_URL+DB_NAME from /app/backend/.env. The Broadcaster draft key is 've_blast_draft' in sessionStorage; cleared on successful /broadcast/start. Queue page only renders fail-reason-* test-ids when status='failed' AND error_reason truthy — for live UI verification you'd need to seed a failed outbox doc with error_reason set, then visit /queue. Login OTP is shown directly on the /login screen as 'Dev OTP: 6-digits' — easier to scrape than calling /api/auth/send-otp from inside the container (which returned 403 from urllib for me — possibly k8s egress).",
+  "rca of the issue": "N/A — all reported bug fixes verified working. The earlier 'failed messages with no reason' bug is fixed end-to-end: worker posts {id,reason} -> backend stores error_reason on outbox doc -> /api/whatsapp/queue/recent returns it -> Queue.jsx renders ⚠ reason. Phone validation works as specified ('99870003415' rejected, mixed lists return 200 with invalid_numbers listed). SessionStorage persistence survives /contacts <-> / round-trip and clears only on successful blast start."
+}

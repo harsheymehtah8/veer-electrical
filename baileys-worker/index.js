@@ -113,6 +113,19 @@ async function start() {
         const jid = `${item.phone}@s.whatsapp.net`;
         const p = item.payload;
         try {
+          // Pre-flight: confirm the number is actually registered on WhatsApp.
+          // Cheap call (cached server-side by Baileys) — saves "send to ghost" failures
+          // that the WA server silently swallows.
+          let onWA = true;
+          try {
+            const checks = await sock.onWhatsApp(item.phone);
+            onWA = !!(checks && checks[0] && checks[0].exists);
+          } catch (_) {
+            onWA = true; // if check fails, attempt send anyway
+          }
+          if (!onWA) {
+            throw new Error("Not registered on WhatsApp");
+          }
           if (p.type === "text") {
             await sock.sendMessage(jid, { text: p.text });
           } else if (p.type === "pdf" && p.file_id) {
@@ -133,8 +146,9 @@ async function start() {
             : 1000 + Math.random() * 2000;
           await new Promise((res) => setTimeout(res, delay));
         } catch (e) {
-          console.error(`❌ [${SENDER_ID}] Send failed:`, e.message);
-          failed.push(item.id);
+          const reason = (e && e.message) ? String(e.message).slice(0, 250) : "send failed";
+          console.error(`❌ [${SENDER_ID}] ${item.phone}: ${reason}`);
+          failed.push({ id: item.id, reason });
         }
       }
       if (sent.length || failed.length) {

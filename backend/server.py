@@ -1004,24 +1004,41 @@ async def whatsapp_outbox(
 
 @api.post("/whatsapp/ack")
 async def whatsapp_ack(body: Dict[str, Any], x_webhook_secret: Optional[str] = Header(None)):
-    """Worker confirms which outbox messages were sent or failed."""
+    """Worker confirms which outbox messages were sent or failed.
+    `failed` accepts either ["id"] (legacy) or [{"id": "...", "reason": "..."}] (preferred).
+    """
     expected = await get_secret()
     if not expected or x_webhook_secret != expected:
         raise HTTPException(status_code=401, detail="Invalid webhook secret")
     sent_ids = body.get("sent", [])
-    failed_ids = body.get("failed", [])
+    raw_failed = body.get("failed", [])
     sender_id = body.get("sender_id")
+    # Normalize failed entries -> list of (id, reason)
+    failed_pairs: List[tuple] = []
+    for f in raw_failed:
+        if isinstance(f, dict):
+            fid = f.get("id")
+            reason = (f.get("reason") or "").strip()[:300]
+            if fid:
+                failed_pairs.append((fid, reason))
+        elif isinstance(f, str):
+            failed_pairs.append((f, ""))
+    failed_ids = [fid for fid, _ in failed_pairs]
     if sent_ids:
         await db.outbox.update_many({"_id": {"$in": sent_ids}}, {"$set": {"status": "sent", "sent_at": now_iso()}})
         if sender_id:
             await db.senders.update_one({"_id": sender_id}, {"$inc": {"daily_sent": len(sent_ids)}})
-        # Also mark broadcast progress
         for sid in sent_ids:
             doc = await db.outbox.find_one({"_id": sid}, {"broadcast_id": 1})
             if doc and doc.get("broadcast_id"):
                 await db.broadcasts.update_one({"_id": doc["broadcast_id"]}, {"$inc": {"sent": 1}})
-    if failed_ids:
-        await db.outbox.update_many({"_id": {"$in": failed_ids}}, {"$set": {"status": "failed", "failed_at": now_iso()}})
+    if failed_pairs:
+        # Per-message reason update (one update per item to preserve reason)
+        for fid, reason in failed_pairs:
+            await db.outbox.update_one(
+                {"_id": fid},
+                {"$set": {"status": "failed", "failed_at": now_iso(), "error_reason": reason or "send failed"}},
+            )
         for sid in failed_ids:
             doc = await db.outbox.find_one({"_id": sid}, {"broadcast_id": 1})
             if doc and doc.get("broadcast_id"):
@@ -1051,7 +1068,7 @@ async def queue_recent(limit: int = 50):
     """Most recent outbox entries across all statuses."""
     items = await db.outbox.find(
         {},
-        {"_id": 1, "phone": 1, "payload": 1, "sender_id": 1, "status": 1, "created_at": 1, "sent_at": 1, "failed_at": 1, "broadcast_id": 1},
+        {"_id": 1, "phone": 1, "payload": 1, "sender_id": 1, "status": 1, "created_at": 1, "sent_at": 1, "failed_at": 1, "broadcast_id": 1, "error_reason": 1},
     ).sort("created_at", -1).to_list(limit)
     out = []
     for it in items:
@@ -1067,6 +1084,7 @@ async def queue_recent(limit: int = 50):
             "sent_at": it.get("sent_at"),
             "failed_at": it.get("failed_at"),
             "broadcast_id": it.get("broadcast_id"),
+            "error_reason": it.get("error_reason"),
         })
     return out
 
@@ -1228,16 +1246,36 @@ async def start_broadcast(payload: Dict[str, Any], background_tasks: BackgroundT
     contacts = payload.get("contacts", [])
     if len(contacts) > 50:
         raise HTTPException(400, "Max 50 contacts per blast")
+    # Normalize + validate phone numbers — drop malformed ones early so they don't burn sender reputation
+    cleaned: List[Dict[str, Any]] = []
+    invalid: List[str] = []
+    for c in contacts:
+        raw = (c.get("phone") or "").strip()
+        norm = normalize_phone(raw)
+        # Valid WhatsApp numbers: 12-digit Indian (91XXXXXXXXXX) or 12–15 digit international
+        # Reject malformed inputs like "99870003415" (11 digits, no valid country code).
+        is_valid = (
+            (norm.startswith("91") and len(norm) == 12) or
+            (12 <= len(norm) <= 15 and not norm.startswith("0"))
+        )
+        if is_valid:
+            cleaned.append({**c, "phone": norm})
+        else:
+            invalid.append(raw or "(blank)")
+    if not cleaned:
+        raise HTTPException(400, f"All {len(contacts)} numbers are invalid. Examples: {', '.join(invalid[:3])}")
     job = BroadcastJob(
         id=new_id(),
-        contacts=contacts,
+        contacts=cleaned,
         message=payload.get("message", ""),
         attachment_id=payload.get("attachment_id"),
         attachment_name=payload.get("attachment_name"),
         mode=payload.get("mode", "A"),
-        total=len(contacts),
+        total=len(cleaned),
         created_at=now_iso(),
     ).model_dump()
+    if invalid:
+        job["invalid_numbers"] = invalid[:50]
     # Optional: force a single sender
     sender_id = payload.get("sender_id")
     if sender_id:

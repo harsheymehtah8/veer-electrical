@@ -8,22 +8,30 @@ import { Progress } from "@/components/ui/progress";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Upload, Clipboard, Users, Paperclip, Send, X, Pause, FileText, BookOpen, Search } from "lucide-react";
+import { Upload, Clipboard, Users, Paperclip, Send, X, Pause, FileText, BookOpen, Search, Save } from "lucide-react";
 
 export default function Broadcaster() {
-  const [contacts, setContacts] = useState([]);
-  const [tab, setTab] = useState("excel");
-  const [pasteText, setPasteText] = useState("");
-  const [message, setMessage] = useState("");
-  const [mode, setMode] = useState("A");
-  const [attachment, setAttachment] = useState(null);
+  // ---- Hydrate persisted draft from sessionStorage so navigating away doesn't lose state ----
+  const DRAFT_KEY = "ve_blast_draft";
+  const draft = (() => {
+    try { return JSON.parse(sessionStorage.getItem(DRAFT_KEY) || "{}"); } catch { return {}; }
+  })();
+
+  const [contacts, setContacts] = useState(draft.contacts || []);
+  const [tab, setTab] = useState(draft.tab || "excel");
+  const [pasteText, setPasteText] = useState(draft.pasteText || "");
+  const [message, setMessage] = useState(draft.message || "");
+  const [mode, setMode] = useState(draft.mode || "A");
+  const [attachment, setAttachment] = useState(draft.attachment || null);
   const [job, setJob] = useState(null);
   const [savedLeads, setSavedLeads] = useState([]);
   const [pickerSel, setPickerSel] = useState({});
   const [senders, setSenders] = useState([]);
-  const [pickedSender, setPickedSender] = useState("auto");
+  const [pickedSender, setPickedSender] = useState(draft.pickedSender || "auto");
   const [templates, setTemplates] = useState([]);
   const [showTplPicker, setShowTplPicker] = useState(false);
+  const [showSaveTpl, setShowSaveTpl] = useState(false);
+  const [saveTplName, setSaveTplName] = useState("");
   const [groups, setGroups] = useState([]);
   const [groupSearch, setGroupSearch] = useState("");
   const [leadsSearch, setLeadsSearch] = useState("");
@@ -31,6 +39,12 @@ export default function Broadcaster() {
   const fileInput = useRef(null);
   const attachInput = useRef(null);
   const pollRef = useRef(null);
+
+  // Persist draft as user edits it
+  useEffect(() => {
+    const d = { contacts, tab, pasteText, message, mode, attachment, pickedSender };
+    try { sessionStorage.setItem(DRAFT_KEY, JSON.stringify(d)); } catch {}
+  }, [contacts, tab, pasteText, message, mode, attachment, pickedSender]);
 
   useEffect(() => {
     if (tab === "leads") {
@@ -84,6 +98,36 @@ export default function Broadcaster() {
     setShowTplPicker(true);
   };
 
+  const openSaveTplDialog = () => {
+    if (!message.trim() && !attachment) {
+      toast.error("Type a message or add an attachment first");
+      return;
+    }
+    setSaveTplName("");
+    setShowSaveTpl(true);
+  };
+
+  const saveCurrentAsTemplate = async () => {
+    const name = saveTplName.trim();
+    if (!name) {
+      toast.error("Template name required");
+      return;
+    }
+    try {
+      await api.post("/blast-templates", {
+        name,
+        message: message || "",
+        attachment_id: attachment?.id || null,
+        attachment_name: attachment?.name || null,
+      });
+      toast.success(`Saved as "${name}"`);
+      setShowSaveTpl(false);
+      setSaveTplName("");
+    } catch {
+      toast.error("Failed to save template");
+    }
+  };
+
   useEffect(() => {
     if (job && job.status !== "done") {
       pollRef.current = setInterval(async () => {
@@ -129,16 +173,28 @@ export default function Broadcaster() {
     if (contacts.length === 0) return toast.error("Add contacts first");
     if (contacts.length > 50) return toast.error("Max 50 contacts");
     if (!message && !attachment) return toast.error("Add a message or attachment");
-    const r = await api.post("/broadcast/start", {
-      contacts,
-      message,
-      mode,
-      attachment_id: attachment?.id,
-      attachment_name: attachment?.name,
-      sender_id: pickedSender !== "auto" ? pickedSender : undefined,
-    });
-    setJob(r.data);
-    toast.success("Blast queued");
+    try {
+      const r = await api.post("/broadcast/start", {
+        contacts,
+        message,
+        mode,
+        attachment_id: attachment?.id,
+        attachment_name: attachment?.name,
+        sender_id: pickedSender !== "auto" ? pickedSender : undefined,
+      });
+      setJob(r.data);
+      // Clear persisted draft on success — fresh slate for next blast
+      try { sessionStorage.removeItem("ve_blast_draft"); } catch {}
+      const skipped = (r.data?.invalid_numbers || []).length;
+      if (skipped > 0) {
+        toast.warning(`Blast queued — ${skipped} invalid number${skipped > 1 ? "s" : ""} skipped`);
+      } else {
+        toast.success("Blast queued");
+      }
+    } catch (err) {
+      const msg = err?.response?.data?.detail || "Failed to start blast";
+      toast.error(msg);
+    }
   };
 
   const pause = async () => {
@@ -325,15 +381,25 @@ export default function Broadcaster() {
 
       {/* Message + attachment */}
       <div className="bg-white rounded-3xl border border-gray-200 p-4 space-y-3">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-2">
           <h2 className="font-[Manrope] text-base font-semibold">Message</h2>
-          <button
-            onClick={openTplPicker}
-            className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 press-fx"
-            data-testid="use-template-btn"
-          >
-            <BookOpen className="w-3.5 h-3.5" /> Use template
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={openSaveTplDialog}
+              className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 press-fx disabled:opacity-50"
+              disabled={!message.trim() && !attachment}
+              data-testid="save-as-template-btn"
+            >
+              <Save className="w-3.5 h-3.5" /> Save as template
+            </button>
+            <button
+              onClick={openTplPicker}
+              className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 press-fx"
+              data-testid="use-template-btn"
+            >
+              <BookOpen className="w-3.5 h-3.5" /> Use template
+            </button>
+          </div>
         </div>
         <Textarea
           value={message}
@@ -476,6 +542,49 @@ export default function Broadcaster() {
           <Button onClick={() => { setShowTplPicker(false); window.location.assign("/blast-templates"); }} variant="outline" className="w-full rounded-full h-11" data-testid="manage-tpl-btn">
             Manage templates
           </Button>
+        </DialogContent>
+      </Dialog>
+
+      {/* Save current draft as template */}
+      <Dialog open={showSaveTpl} onOpenChange={setShowSaveTpl}>
+        <DialogContent className="max-w-md rounded-3xl">
+          <DialogHeader>
+            <DialogTitle>Save as template</DialogTitle>
+            <DialogDescription>
+              Save the current message {attachment ? "and attachment " : ""}so you can reuse it later.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-[0.15em] text-gray-500">Template name *</label>
+              <Input
+                value={saveTplName}
+                onChange={(e) => setSaveTplName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") saveCurrentAsTemplate(); }}
+                placeholder="e.g. Diwali Offer 2026"
+                className="mt-1 h-11 rounded-2xl bg-gray-50 border-gray-200"
+                autoFocus
+                data-testid="save-tpl-name-input"
+              />
+            </div>
+            <div className="bg-gray-50 rounded-2xl p-3 text-xs text-gray-600 max-h-32 overflow-auto">
+              <div className="font-semibold mb-1">Preview</div>
+              {message && <div className="whitespace-pre-wrap line-clamp-4">{message}</div>}
+              {!message && <div className="italic text-gray-400">(no text)</div>}
+              {attachment && (
+                <div className="mt-1 inline-flex items-center gap-1 bg-amber-50 text-amber-700 px-2 py-0.5 rounded-full text-[11px]">
+                  <FileText className="w-3 h-3" /> {attachment.name}
+                </div>
+              )}
+            </div>
+            <Button
+              onClick={saveCurrentAsTemplate}
+              className="w-full h-12 rounded-full bg-emerald-600 hover:bg-emerald-700 press-fx"
+              data-testid="save-tpl-confirm-btn"
+            >
+              Save Template
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

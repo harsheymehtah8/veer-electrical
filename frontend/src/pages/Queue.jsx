@@ -126,6 +126,11 @@ export default function Queue() {
                     {m.type === "pdf" ? <FileText className="w-3 h-3 inline mr-1" /> : null}
                     {m.preview || (m.type === "pdf" ? "PDF" : "—")}
                   </div>
+                  {m.status === "failed" && m.error_reason && (
+                    <div className="text-[10px] text-red-600 mt-0.5 truncate" data-testid={`fail-reason-${m.id}`}>
+                      ⚠ {m.error_reason}
+                    </div>
+                  )}
                 </div>
                 <div className="text-right shrink-0">
                   <div className="text-[10px] text-gray-500">{senderLabel(m.sender_id)}</div>
