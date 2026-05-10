@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
-import { LogOut, Send, Radio, Bot, Copy, RefreshCw, ShieldCheck, Eye, EyeOff, Power, BookOpen } from "lucide-react";
+import { LogOut, Send, Radio, Bot, Copy, RefreshCw, ShieldCheck, Eye, EyeOff, Power, BookOpen, Users } from "lucide-react";
 
 export default function Settings() {
   const [s, setS] = useState({ business_name: "", prefix_tag: "", owner_phone: "", webhook_secret: "", bot_enabled: true });
@@ -111,6 +111,11 @@ export default function Settings() {
           </div>
           <div className="text-sm font-semibold">Blast Queue</div>
           <div className="text-[11px] text-gray-500">See pending / sent / failed</div>
+        </button>
+        <button onClick={() => nav("/groups")} className="bg-white border border-gray-200 rounded-2xl p-3 text-left press-fx" data-testid="quick-groups">
+          <Users className="w-5 h-5 text-blue-600 mb-2" />
+          <div className="text-sm font-semibold">Groups</div>
+          <div className="text-[11px] text-gray-500">Saved contact lists</div>
         </button>
         <button onClick={() => nav("/blast-templates")} className="bg-white border border-gray-200 rounded-2xl p-3 text-left press-fx" data-testid="quick-templates">
           <BookOpen className="w-5 h-5 text-blue-600 mb-2" />

@@ -6,8 +6,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Progress } from "@/components/ui/progress";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Upload, Clipboard, Users, Paperclip, Send, X, Pause, FileText, BookOpen } from "lucide-react";
+import { Upload, Clipboard, Users, Paperclip, Send, X, Pause, FileText, BookOpen, Search } from "lucide-react";
 
 export default function Broadcaster() {
   const [contacts, setContacts] = useState([]);
@@ -23,13 +24,37 @@ export default function Broadcaster() {
   const [pickedSender, setPickedSender] = useState("auto");
   const [templates, setTemplates] = useState([]);
   const [showTplPicker, setShowTplPicker] = useState(false);
+  const [groups, setGroups] = useState([]);
+  const [groupSearch, setGroupSearch] = useState("");
+  const [leadsSearch, setLeadsSearch] = useState("");
+  const [leadsSrcFilter, setLeadsSrcFilter] = useState("all");
   const fileInput = useRef(null);
   const attachInput = useRef(null);
   const pollRef = useRef(null);
 
   useEffect(() => {
-    if (tab === "leads") api.get("/contacts", { params: { limit: 500 } }).then((r) => setSavedLeads(r.data.items || []));
-  }, [tab]);
+    if (tab === "leads") {
+      const params = { limit: 500 };
+      if (leadsSearch) params.q = leadsSearch;
+      if (leadsSrcFilter !== "all") params.source = leadsSrcFilter;
+      api.get("/contacts", { params }).then((r) => setSavedLeads(r.data.items || []));
+    }
+    if (tab === "groups") {
+      api.get("/groups", { params: { q: groupSearch || undefined } }).then((r) => setGroups(r.data));
+    }
+  }, [tab, leadsSearch, leadsSrcFilter, groupSearch]);
+
+  // Auto-load contacts if redirected from Groups page with a "Blast Group" intent
+  useEffect(() => {
+    const stored = sessionStorage.getItem("ve_blast_from_group");
+    if (!stored) return;
+    try {
+      const data = JSON.parse(stored);
+      sessionStorage.removeItem("ve_blast_from_group");
+      setContacts(data.contacts.slice(0, 50));
+      toast.success(`Loaded ${data.contacts.length} from "${data.group_name}"`);
+    } catch {}
+  }, []);
 
   useEffect(() => {
     const loadSenders = () => api.get("/senders").then((r) => setSenders(r.data)).catch(() => {});
@@ -157,7 +182,7 @@ export default function Broadcaster() {
       <div className="bg-white rounded-3xl border border-gray-200 p-4">
         <h2 className="font-[Manrope] text-base font-semibold mb-3">Add contacts</h2>
         <Tabs value={tab} onValueChange={setTab}>
-          <TabsList className="bg-gray-100 rounded-full h-11 w-full grid grid-cols-3 p-1" data-testid="contacts-source-tabs">
+          <TabsList className="bg-gray-100 rounded-full h-11 w-full grid grid-cols-4 p-1" data-testid="contacts-source-tabs">
             <TabsTrigger value="excel" className="rounded-full data-[state=active]:bg-white data-[state=active]:shadow-sm" data-testid="tab-excel">
               <Upload className="w-4 h-4 mr-1" /> Excel
             </TabsTrigger>
@@ -165,7 +190,10 @@ export default function Broadcaster() {
               <Clipboard className="w-4 h-4 mr-1" /> Paste
             </TabsTrigger>
             <TabsTrigger value="leads" className="rounded-full data-[state=active]:bg-white data-[state=active]:shadow-sm" data-testid="tab-leads">
-              <Users className="w-4 h-4 mr-1" /> Leads
+              <Users className="w-4 h-4 mr-1" /> Contacts
+            </TabsTrigger>
+            <TabsTrigger value="groups" className="rounded-full data-[state=active]:bg-white data-[state=active]:shadow-sm" data-testid="tab-groups">
+              <BookOpen className="w-4 h-4 mr-1" /> Groups
             </TabsTrigger>
           </TabsList>
 
@@ -188,8 +216,31 @@ export default function Broadcaster() {
             </Button>
           </TabsContent>
           <TabsContent value="leads" className="pt-4 space-y-2">
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                <Input
+                  value={leadsSearch}
+                  onChange={(e) => setLeadsSearch(e.target.value)}
+                  placeholder="Search name / city / mobile"
+                  className="pl-9 h-10 rounded-full bg-gray-50 border-gray-200"
+                  data-testid="leads-search-input"
+                />
+              </div>
+              <Select value={leadsSrcFilter} onValueChange={setLeadsSrcFilter}>
+                <SelectTrigger className="w-28 rounded-full h-10 bg-gray-50 border-gray-200" data-testid="leads-source-filter">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All</SelectItem>
+                  <SelectItem value="manual">Manual</SelectItem>
+                  <SelectItem value="imported">Imported</SelectItem>
+                  <SelectItem value="bot">Bot Lead</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
             <div className="max-h-72 overflow-auto space-y-2 pr-1">
-              {savedLeads.length === 0 && <p className="text-sm text-gray-500 text-center py-6">No contacts yet</p>}
+              {savedLeads.length === 0 && <p className="text-sm text-gray-500 text-center py-6">No contacts match</p>}
               {savedLeads.map((l) => (
                 <label key={l.id} className="flex items-center gap-3 p-2.5 rounded-xl bg-gray-50 cursor-pointer">
                   <input
@@ -199,16 +250,58 @@ export default function Broadcaster() {
                     onChange={(e) => setPickerSel({ ...pickerSel, [l.id]: e.target.checked })}
                     data-testid={`leads-pick-${l.id}`}
                   />
-                  <div className="flex-1">
-                    <div className="text-sm font-medium">{l.name || l.shop_name || l.party_name || "Unnamed"}</div>
-                    <div className="text-xs text-gray-500">+{l.mobile || l.phone} • {l.city}</div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium truncate">{l.name || l.shop_name || l.party_name || "Unnamed"}</div>
+                    <div className="text-xs text-gray-500 truncate">+{l.mobile || l.phone} • {l.city} {l.state ? `• ${l.state}` : ""}</div>
                   </div>
+                  <span className="text-[10px] uppercase tracking-wide text-gray-400">{l.source || "—"}</span>
                 </label>
               ))}
             </div>
             <Button onClick={addFromLeads} className="w-full h-11 rounded-full bg-emerald-600 hover:bg-emerald-700 press-fx" data-testid="add-from-leads-btn">
               Add selected
             </Button>
+          </TabsContent>
+          <TabsContent value="groups" className="pt-4 space-y-2">
+            <div className="relative">
+              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+              <Input
+                value={groupSearch}
+                onChange={(e) => setGroupSearch(e.target.value)}
+                placeholder="Search groups"
+                className="pl-9 h-10 rounded-full bg-gray-50 border-gray-200"
+                data-testid="groups-search-input"
+              />
+            </div>
+            <div className="max-h-72 overflow-auto space-y-2">
+              {groups.length === 0 && (
+                <div className="text-center text-sm text-gray-500 py-6">
+                  No groups. <button onClick={() => window.location.assign("/groups")} className="text-emerald-600 underline">Create one</button>
+                </div>
+              )}
+              {groups.map((g) => (
+                <button
+                  key={g.id}
+                  onClick={async () => {
+                    const r = await api.get(`/groups/${g.id}`);
+                    const list = (r.data.contacts || []).map((c) => ({ phone: c.mobile, name: c.name || c.shop_name || c.mobile }));
+                    setContacts([...contacts, ...list].slice(0, 50));
+                    toast.success(`Added ${list.length} from "${g.name}"`);
+                  }}
+                  className="w-full text-left flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-emerald-50 press-fx"
+                  data-testid={`group-pick-${g.id}`}
+                >
+                  <div className="w-9 h-9 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center">
+                    <BookOpen className="w-4 h-4" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium truncate">{g.name}</div>
+                    <div className="text-xs text-gray-500">{g.count} contacts</div>
+                  </div>
+                  <span className="text-xs text-emerald-600 font-medium">Add all</span>
+                </button>
+              ))}
+            </div>
           </TabsContent>
         </Tabs>
 

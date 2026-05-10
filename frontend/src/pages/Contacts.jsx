@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import api, { API_BASE } from "@/lib/api";
+import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Search, Download, Upload, Plus, Phone, Trash2, Pencil, Filter } from "lucide-react";
+import { Search, Download, Upload, Plus, Phone, Trash2, Pencil, Filter, Users } from "lucide-react";
 
 const SOURCE_LABEL = { manual: "Manual", imported: "Imported", bot: "Bot Lead" };
 const SOURCE_COLOR = {
@@ -23,6 +24,8 @@ export default function Contacts() {
 
   // Add/Edit dialog
   const [editing, setEditing] = useState(null);
+
+  const nav = useNavigate();
 
   // Import wizard
   const [importStep, setImportStep] = useState(0); // 0=closed, 1=preview, 2=mapping
@@ -126,6 +129,9 @@ export default function Contacts() {
           <h1 className="font-[Manrope] text-3xl font-bold tracking-tight text-gray-900">Contacts</h1>
           <p className="text-sm text-gray-500">{stats.total} total — Bot: {stats.by_source.bot || 0} · Imported: {stats.by_source.imported || 0} · Manual: {stats.by_source.manual || 0}</p>
         </div>
+        <button onClick={() => nav("/groups")} className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 press-fx" data-testid="open-groups-btn">
+          <Users className="w-3.5 h-3.5" /> Groups
+        </button>
       </div>
 
       {/* Action row */}

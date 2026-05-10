@@ -12,6 +12,7 @@ import Settings from "@/pages/Settings";
 import Simulator from "@/pages/Simulator";
 import Queue from "@/pages/Queue";
 import BlastTemplates from "@/pages/BlastTemplates";
+import Groups from "@/pages/Groups";
 import AppLayout from "@/components/AppLayout";
 
 const RequireAuth = ({ children }) => {
@@ -45,6 +46,7 @@ function App() {
           <Route path="/simulator" element={<Simulator />} />
           <Route path="/queue" element={<Queue />} />
           <Route path="/blast-templates" element={<BlastTemplates />} />
+          <Route path="/groups" element={<Groups />} />
         </Route>
       </Routes>
     </BrowserRouter>

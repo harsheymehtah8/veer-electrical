@@ -330,14 +330,19 @@ async def list_contacts(q: Optional[str] = None, source: Optional[str] = None,
     if state:
         query["state"] = {"$regex": state, "$options": "i"}
     if q:
-        query["$or"] = [
+        digits = re.sub(r'\D', '', q)
+        non_digit = re.sub(r'\d', '', q).strip()
+        or_clauses = [
             {"name": {"$regex": q, "$options": "i"}},
             {"shop_name": {"$regex": q, "$options": "i"}},
-            {"mobile": {"$regex": re.sub(r'\D', '', q), "$options": "i"}},
             {"city": {"$regex": q, "$options": "i"}},
             {"district": {"$regex": q, "$options": "i"}},
             {"state": {"$regex": q, "$options": "i"}},
         ]
+        # Only search mobile if input looks like a phone number (mostly digits, 4+ digits, no significant text)
+        if digits and len(digits) >= 4 and len(non_digit) <= 2:
+            or_clauses.append({"mobile": {"$regex": digits}})
+        query["$or"] = or_clauses
     total = await db.contacts.count_documents(query)
     items = await db.contacts.find(query, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
     return {"total": total, "items": items}
@@ -487,18 +492,24 @@ async def export_contacts():
                              headers={"Content-Disposition": "attachment; filename=contacts.xlsx"})
 
 async def upsert_contact_from_bot(phone: str, party_name: str, city: str, state: str):
-    """Called by bot when a lead is captured — keeps contacts table in sync."""
+    """Called by bot when a lead is captured — keeps contacts table in sync.
+    If a contact already exists (imported/manual), only the source tag is upgraded to 'bot'
+    and existing fields are preserved unless empty. Never overwrites already-set values.
+    """
     mobile = normalize_phone(phone)
     if not mobile:
         return
     existing = await db.contacts.find_one({"mobile": mobile})
     if existing:
-        await db.contacts.update_one({"id": existing["id"]}, {"$set": {
-            "name": party_name or existing.get("name", ""),
-            "city": city or existing.get("city", ""),
-            "state": state or existing.get("state", ""),
-            "updated_at": now_iso(),
-        }})
+        update_set = {"source": "bot", "updated_at": now_iso()}
+        # Only fill blanks — never overwrite already-set fields
+        if not (existing.get("name") or "").strip() and party_name:
+            update_set["name"] = party_name
+        if not (existing.get("city") or "").strip() and city:
+            update_set["city"] = city
+        if not (existing.get("state") or "").strip() and state:
+            update_set["state"] = state
+        await db.contacts.update_one({"id": existing["id"]}, {"$set": update_set})
     else:
         c = Contact(
             id=new_id(),
@@ -549,6 +560,82 @@ async def update_blast_template(tid: str, payload: Dict[str, Any]):
 @api.delete("/blast-templates/{tid}")
 async def delete_blast_template(tid: str):
     await db.blast_templates.delete_one({"id": tid})
+    return {"ok": True}
+
+# ============ GROUPS (contact groups for blasts) ============
+GROUP_CAP = 50
+
+@api.get("/groups")
+async def list_groups(q: Optional[str] = None):
+    query: Dict[str, Any] = {}
+    if q:
+        query["name"] = {"$regex": q, "$options": "i"}
+    items = await db.groups.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    # add count + pop heavy contact_ids if not needed (keep ids for badge)
+    for g in items:
+        g["count"] = len(g.get("contact_ids") or [])
+    return items
+
+@api.get("/groups/{gid}")
+async def get_group(gid: str):
+    g = await db.groups.find_one({"id": gid}, {"_id": 0})
+    if not g:
+        raise HTTPException(404, "Group not found")
+    contact_ids = g.get("contact_ids") or []
+    contacts = await db.contacts.find({"id": {"$in": contact_ids}}, {"_id": 0}).to_list(500)
+    g["contacts"] = contacts
+    g["count"] = len(contact_ids)
+    return g
+
+@api.post("/groups")
+async def create_group(payload: Dict[str, Any]):
+    name = (payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "Group name required")
+    contact_ids = payload.get("contact_ids") or []
+    if len(contact_ids) > GROUP_CAP:
+        raise HTTPException(400, f"Max {GROUP_CAP} contacts per group")
+    doc = {
+        "id": new_id(),
+        "name": name,
+        "contact_ids": list(dict.fromkeys(contact_ids))[:GROUP_CAP],  # dedupe + cap
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    }
+    await db.groups.insert_one(doc)
+    doc.pop("_id", None)
+    doc["count"] = len(doc["contact_ids"])
+    return doc
+
+@api.put("/groups/{gid}")
+async def update_group(gid: str, payload: Dict[str, Any]):
+    update: Dict[str, Any] = {"updated_at": now_iso()}
+    if "name" in payload and payload["name"]:
+        update["name"] = payload["name"].strip()
+    await db.groups.update_one({"id": gid}, {"$set": update})
+    return {"ok": True}
+
+@api.post("/groups/{gid}/contacts")
+async def add_to_group(gid: str, payload: Dict[str, Any]):
+    add_ids = payload.get("contact_ids") or []
+    g = await db.groups.find_one({"id": gid})
+    if not g:
+        raise HTTPException(404, "Group not found")
+    current = g.get("contact_ids") or []
+    merged = list(dict.fromkeys(current + add_ids))
+    if len(merged) > GROUP_CAP:
+        raise HTTPException(400, f"Max {GROUP_CAP} contacts per group (would be {len(merged)})")
+    await db.groups.update_one({"id": gid}, {"$set": {"contact_ids": merged, "updated_at": now_iso()}})
+    return {"count": len(merged)}
+
+@api.delete("/groups/{gid}/contacts/{cid}")
+async def remove_from_group(gid: str, cid: str):
+    await db.groups.update_one({"id": gid}, {"$pull": {"contact_ids": cid}, "$set": {"updated_at": now_iso()}})
+    return {"ok": True}
+
+@api.delete("/groups/{gid}")
+async def delete_group(gid: str):
+    await db.groups.delete_one({"id": gid})
     return {"ok": True}
 
 # ============ SENDERS ============
