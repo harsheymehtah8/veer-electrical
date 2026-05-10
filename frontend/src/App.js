@@ -4,6 +4,7 @@ import { Toaster } from "sonner";
 import Login from "@/pages/Login";
 import Broadcaster from "@/pages/Broadcaster";
 import Leads from "@/pages/Leads";
+import Contacts from "@/pages/Contacts";
 import Catalog from "@/pages/Catalog";
 import BotMessages from "@/pages/BotMessages";
 import Senders from "@/pages/Senders";
@@ -35,6 +36,7 @@ function App() {
         >
           <Route path="/" element={<Broadcaster />} />
           <Route path="/leads" element={<Leads />} />
+          <Route path="/contacts" element={<Contacts />} />
           <Route path="/catalog" element={<Catalog />} />
           <Route path="/bot" element={<BotMessages />} />
           <Route path="/senders" element={<Senders />} />

@@ -25,7 +25,7 @@ export default function Broadcaster() {
   const pollRef = useRef(null);
 
   useEffect(() => {
-    if (tab === "leads") api.get("/leads").then((r) => setSavedLeads(r.data));
+    if (tab === "leads") api.get("/contacts", { params: { limit: 500 } }).then((r) => setSavedLeads(r.data.items || []));
   }, [tab]);
 
   useEffect(() => {
@@ -101,10 +101,13 @@ export default function Broadcaster() {
   const removeContact = (i) => setContacts(contacts.filter((_, idx) => idx !== i));
 
   const addFromLeads = () => {
-    const picked = savedLeads.filter((l) => pickerSel[l.id]).map((l) => ({ phone: l.phone, name: l.party_name }));
+    const picked = savedLeads.filter((l) => pickerSel[l.id]).map((l) => ({
+      phone: l.mobile || l.phone,
+      name: l.name || l.shop_name || l.party_name || "",
+    }));
     setContacts([...contacts, ...picked].slice(0, 50));
     setPickerSel({});
-    toast.success(`Added ${picked.length} from leads`);
+    toast.success(`Added ${picked.length} from contacts`);
   };
 
   const pct = job && job.total ? Math.round(((job.sent + job.failed) / job.total) * 100) : 0;
@@ -162,7 +165,7 @@ export default function Broadcaster() {
           </TabsContent>
           <TabsContent value="leads" className="pt-4 space-y-2">
             <div className="max-h-72 overflow-auto space-y-2 pr-1">
-              {savedLeads.length === 0 && <p className="text-sm text-gray-500 text-center py-6">No saved leads yet</p>}
+              {savedLeads.length === 0 && <p className="text-sm text-gray-500 text-center py-6">No contacts yet</p>}
               {savedLeads.map((l) => (
                 <label key={l.id} className="flex items-center gap-3 p-2.5 rounded-xl bg-gray-50 cursor-pointer">
                   <input
@@ -173,8 +176,8 @@ export default function Broadcaster() {
                     data-testid={`leads-pick-${l.id}`}
                   />
                   <div className="flex-1">
-                    <div className="text-sm font-medium">{l.party_name}</div>
-                    <div className="text-xs text-gray-500">{l.phone} • {l.city}</div>
+                    <div className="text-sm font-medium">{l.name || l.shop_name || l.party_name || "Unnamed"}</div>
+                    <div className="text-xs text-gray-500">+{l.mobile || l.phone} • {l.city}</div>
                   </div>
                 </label>
               ))}

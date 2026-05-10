@@ -1,9 +1,9 @@
 import { NavLink } from "react-router-dom";
-import { Megaphone, Users, FolderTree, Bot, Settings as SettingsIcon } from "lucide-react";
+import { Megaphone, BookUser, FolderTree, Bot, Settings as SettingsIcon } from "lucide-react";
 
 const items = [
   { to: "/", label: "Blast", icon: Megaphone, testid: "nav-broadcast" },
-  { to: "/leads", label: "Leads", icon: Users, testid: "nav-leads" },
+  { to: "/contacts", label: "Contacts", icon: BookUser, testid: "nav-contacts" },
   { to: "/catalog", label: "Catalog", icon: FolderTree, testid: "nav-catalog" },
   { to: "/bot", label: "Bot", icon: Bot, testid: "nav-bot" },
   { to: "/settings", label: "More", icon: SettingsIcon, testid: "nav-more" },

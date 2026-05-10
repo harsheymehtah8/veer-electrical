@@ -287,6 +287,232 @@ async def export_leads():
     return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                              headers={"Content-Disposition": "attachment; filename=leads.xlsx"})
 
+# ============ CONTACTS (Address Book) ============
+class Contact(BaseModel):
+    id: str
+    name: str = ""
+    shop_name: str = ""
+    mobile: str = ""
+    city: str = ""
+    district: str = ""
+    state: str = ""
+    source: str = "manual"  # manual, imported, bot
+    created_at: str
+    updated_at: str
+
+def normalize_phone(raw: str) -> str:
+    """Normalize Indian phone numbers — always returns digits only with 91 prefix.
+    Examples: 9876543210 -> 919876543210, +91 98765-43210 -> 919876543210, 09876543210 -> 919876543210.
+    """
+    if not raw:
+        return ""
+    digits = re.sub(r'\D', '', str(raw))
+    # Strip Indian leading 0
+    if digits.startswith("0") and len(digits) == 11:
+        digits = digits[1:]
+    # Already has 91 prefix
+    if digits.startswith("91") and len(digits) >= 12:
+        return digits
+    # 10-digit Indian number — add 91
+    if len(digits) == 10:
+        return "91" + digits
+    return digits
+
+@api.get("/contacts")
+async def list_contacts(q: Optional[str] = None, source: Optional[str] = None,
+                        city: Optional[str] = None, state: Optional[str] = None,
+                        limit: int = 1000, skip: int = 0):
+    query: Dict[str, Any] = {}
+    if source:
+        query["source"] = source
+    if city:
+        query["city"] = {"$regex": city, "$options": "i"}
+    if state:
+        query["state"] = {"$regex": state, "$options": "i"}
+    if q:
+        query["$or"] = [
+            {"name": {"$regex": q, "$options": "i"}},
+            {"shop_name": {"$regex": q, "$options": "i"}},
+            {"mobile": {"$regex": re.sub(r'\D', '', q), "$options": "i"}},
+            {"city": {"$regex": q, "$options": "i"}},
+            {"district": {"$regex": q, "$options": "i"}},
+            {"state": {"$regex": q, "$options": "i"}},
+        ]
+    total = await db.contacts.count_documents(query)
+    items = await db.contacts.find(query, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
+    return {"total": total, "items": items}
+
+@api.get("/contacts/stats")
+async def contacts_stats():
+    total = await db.contacts.count_documents({})
+    by_source = {}
+    async for r in db.contacts.aggregate([{"$group": {"_id": "$source", "count": {"$sum": 1}}}]):
+        by_source[r["_id"] or "unknown"] = r["count"]
+    return {"total": total, "by_source": by_source}
+
+@api.post("/contacts")
+async def create_contact(payload: Dict[str, str]):
+    mobile = normalize_phone(payload.get("mobile", ""))
+    if not mobile:
+        raise HTTPException(400, "Mobile number required")
+    # Dedup by mobile
+    existing = await db.contacts.find_one({"mobile": mobile})
+    if existing:
+        await db.contacts.update_one({"id": existing["id"]}, {"$set": {
+            "name": payload.get("name", existing.get("name", "")),
+            "shop_name": payload.get("shop_name", existing.get("shop_name", "")),
+            "city": payload.get("city", existing.get("city", "")),
+            "district": payload.get("district", existing.get("district", "")),
+            "state": payload.get("state", existing.get("state", "")),
+            "updated_at": now_iso(),
+        }})
+        return {"id": existing["id"], "merged": True}
+    c = Contact(
+        id=new_id(),
+        name=payload.get("name", "").strip(),
+        shop_name=payload.get("shop_name", "").strip(),
+        mobile=mobile,
+        city=payload.get("city", "").strip(),
+        district=payload.get("district", "").strip(),
+        state=payload.get("state", "").strip(),
+        source=payload.get("source", "manual"),
+        created_at=now_iso(),
+        updated_at=now_iso(),
+    ).model_dump()
+    await db.contacts.insert_one(c)
+    return c
+
+@api.put("/contacts/{contact_id}")
+async def update_contact(contact_id: str, payload: Dict[str, str]):
+    update = {k: v.strip() if isinstance(v, str) else v for k, v in payload.items()
+              if k in ["name", "shop_name", "city", "district", "state"]}
+    if "mobile" in payload:
+        update["mobile"] = normalize_phone(payload["mobile"])
+    update["updated_at"] = now_iso()
+    await db.contacts.update_one({"id": contact_id}, {"$set": update})
+    return {"ok": True}
+
+@api.delete("/contacts/{contact_id}")
+async def delete_contact(contact_id: str):
+    await db.contacts.delete_one({"id": contact_id})
+    return {"ok": True}
+
+# ---- Excel/CSV Import ----
+@api.post("/contacts/import/preview")
+async def import_preview(file: UploadFile = File(...)):
+    """Returns column headers + first 5 sample rows so user can map columns."""
+    content = await file.read()
+    try:
+        if file.filename.lower().endswith((".xlsx", ".xls")):
+            df = pd.read_excel(io.BytesIO(content), dtype=str).fillna("")
+        else:
+            df = pd.read_csv(io.BytesIO(content), dtype=str).fillna("")
+    except Exception as e:
+        raise HTTPException(400, f"Failed to parse file: {e}")
+    columns = [str(c) for c in df.columns]
+    sample = df.head(5).to_dict(orient="records")
+    # Stash file in db for commit step
+    file_id = new_id()
+    await db.import_staging.insert_one({
+        "_id": file_id,
+        "filename": file.filename,
+        "columns": columns,
+        "rows": df.fillna("").astype(str).to_dict(orient="records"),
+        "created_at": now_iso(),
+    })
+    return {
+        "file_id": file_id,
+        "columns": columns,
+        "sample": sample,
+        "total_rows": len(df),
+    }
+
+@api.post("/contacts/import/commit")
+async def import_commit(payload: Dict[str, Any]):
+    """User submits column mapping; backend imports all rows."""
+    file_id = payload.get("file_id")
+    mapping = payload.get("mapping", {})  # {field: column_name}
+    if not file_id:
+        raise HTTPException(400, "file_id required")
+    staged = await db.import_staging.find_one({"_id": file_id})
+    if not staged:
+        raise HTTPException(404, "Import file not found or expired")
+    rows = staged.get("rows", [])
+    inserted = 0
+    merged = 0
+    skipped = 0
+    for row in rows:
+        def col_val(field: str) -> str:
+            return str(row.get(mapping.get(field) or "", "")).strip()
+        mobile = normalize_phone(col_val("mobile"))
+        if not mobile or len(mobile) < 10:
+            skipped += 1
+            continue
+        existing = await db.contacts.find_one({"mobile": mobile})
+        contact_data = {
+            "name": col_val("name"),
+            "shop_name": col_val("shop_name"),
+            "mobile": mobile,
+            "city": col_val("city"),
+            "district": col_val("district"),
+            "state": col_val("state"),
+            "source": "imported",
+            "updated_at": now_iso(),
+        }
+        if existing:
+            await db.contacts.update_one({"id": existing["id"]}, {"$set": {k: v for k, v in contact_data.items() if v}})
+            merged += 1
+        else:
+            contact_data["id"] = new_id()
+            contact_data["created_at"] = now_iso()
+            await db.contacts.insert_one(contact_data)
+            inserted += 1
+    # Cleanup staged file
+    await db.import_staging.delete_one({"_id": file_id})
+    return {"inserted": inserted, "merged": merged, "skipped": skipped, "total": len(rows)}
+
+@api.get("/contacts/export")
+async def export_contacts():
+    contacts = await db.contacts.find({}, {"_id": 0}).sort("created_at", -1).to_list(50000)
+    df = pd.DataFrame(contacts)
+    if df.empty:
+        df = pd.DataFrame(columns=["name", "shop_name", "mobile", "city", "district", "state", "source", "created_at"])
+    else:
+        df = df[["name", "shop_name", "mobile", "city", "district", "state", "source", "created_at"]]
+    buf = io.BytesIO()
+    df.to_excel(buf, index=False, engine='openpyxl')
+    buf.seek(0)
+    return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             headers={"Content-Disposition": "attachment; filename=contacts.xlsx"})
+
+async def upsert_contact_from_bot(phone: str, party_name: str, city: str, state: str):
+    """Called by bot when a lead is captured — keeps contacts table in sync."""
+    mobile = normalize_phone(phone)
+    if not mobile:
+        return
+    existing = await db.contacts.find_one({"mobile": mobile})
+    if existing:
+        await db.contacts.update_one({"id": existing["id"]}, {"$set": {
+            "name": party_name or existing.get("name", ""),
+            "city": city or existing.get("city", ""),
+            "state": state or existing.get("state", ""),
+            "updated_at": now_iso(),
+        }})
+    else:
+        c = Contact(
+            id=new_id(),
+            name=party_name,
+            shop_name="",
+            mobile=mobile,
+            city=city,
+            district="",
+            state=state,
+            source="bot",
+            created_at=now_iso(),
+            updated_at=now_iso(),
+        ).model_dump()
+        await db.contacts.insert_one(c)
+
 # ============ SENDERS ============
 @api.get("/senders")
 async def list_senders():
@@ -431,6 +657,8 @@ async def bot_process(phone: str, message: str, enforce_blast_filter: bool = Fal
             created_at=now_iso(), last_interaction=now_iso()
         ).model_dump()
         await db.leads.insert_one(lead_doc)
+        # Also save in contacts address book
+        await upsert_contact_from_bot(phone, firm, city, st)
         # confirm
         confirm = (await get_template("saved_confirm")) \
             .replace("{prefix}", prefix).replace("{firm}", firm).replace("{city}", city).replace("{state}", st)
@@ -753,7 +981,7 @@ async def parse_excel(file: UploadFile = File(...)):
             if not val:
                 continue
             if re.search(r'\d{7,}', val) and not phone:
-                phone = re.sub(r'\D', '', val)
+                phone = normalize_phone(val)
             elif not name:
                 name = val
         if phone:
@@ -775,7 +1003,7 @@ async def parse_paste(payload: Dict[str, str]):
         for p in parts:
             p = p.strip()
             if re.search(r'\d{7,}', p) and not phone:
-                phone = re.sub(r'\D', '', p)
+                phone = normalize_phone(p)
             elif p and not name:
                 name = p
         if phone:
