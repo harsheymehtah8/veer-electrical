@@ -128,14 +128,29 @@ async function start() {
           }
           if (p.type === "text") {
             await sock.sendMessage(jid, { text: p.text });
-          } else if (p.type === "pdf" && p.file_id) {
-            const pdfUrl = `${VEER_API_URL}/api/files/${p.file_id}`;
-            const pdfRes = await axios.get(pdfUrl, { responseType: "arraybuffer" });
-            await sock.sendMessage(jid, {
-              document: Buffer.from(pdfRes.data),
-              mimetype: "application/pdf",
-              fileName: p.filename || "pricelist.pdf",
-            });
+          } else if (p.file_id) {
+            // Fetch the media file once
+            const fileUrl = `${VEER_API_URL}/api/files/${p.file_id}`;
+            const fileRes = await axios.get(fileUrl, { responseType: "arraybuffer" });
+            const buf = Buffer.from(fileRes.data);
+            const filename = p.filename || `file`;
+            const mime = p.mimetype || "application/octet-stream";
+
+            // Branch on media kind so WhatsApp renders preview/playback correctly
+            if (p.type === "image") {
+              await sock.sendMessage(jid, { image: buf, mimetype: mime, fileName: filename });
+            } else if (p.type === "video") {
+              await sock.sendMessage(jid, { video: buf, mimetype: mime, fileName: filename });
+            } else if (p.type === "audio") {
+              await sock.sendMessage(jid, { audio: buf, mimetype: mime, ptt: false });
+            } else {
+              // pdf | document | any other -> send as document with explicit mimetype
+              await sock.sendMessage(jid, {
+                document: buf,
+                mimetype: mime,
+                fileName: filename,
+              });
+            }
           }
           sent.push(item.id);
           console.log(`📤 [${SENDER_ID}] ${item.phone}: ${p.type}`);

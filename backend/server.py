@@ -1197,8 +1197,32 @@ async def run_broadcast(job_id: str):
         if text.strip():
             out.append({"type": "text", "text": text})
         if attach_id:
-            # If attachment is a PDF, send as document; otherwise still document send
-            out.append({"type": "pdf", "file_id": attach_id, "filename": attach_name or "file.pdf"})
+            # Detect media kind from file extension so WhatsApp renders it correctly.
+            # JPEG sent with application/pdf mimetype won't open — that's been the bug.
+            fname = (attach_name or "file").lower()
+            ext = fname.rsplit(".", 1)[-1] if "." in fname else ""
+            kind_map = {
+                "jpg": ("image", "image/jpeg"),
+                "jpeg": ("image", "image/jpeg"),
+                "png": ("image", "image/png"),
+                "webp": ("image", "image/webp"),
+                "gif": ("image", "image/gif"),
+                "mp4": ("video", "video/mp4"),
+                "mov": ("video", "video/quicktime"),
+                "3gp": ("video", "video/3gpp"),
+                "mp3": ("audio", "audio/mpeg"),
+                "ogg": ("audio", "audio/ogg"),
+                "wav": ("audio", "audio/wav"),
+                "m4a": ("audio", "audio/mp4"),
+                "pdf": ("pdf", "application/pdf"),
+            }
+            media_type, mime = kind_map.get(ext, ("document", "application/octet-stream"))
+            out.append({
+                "type": media_type,
+                "file_id": attach_id,
+                "filename": attach_name or f"file.{ext or 'bin'}",
+                "mimetype": mime,
+            })
         return out
 
     payloads = make_payloads()
