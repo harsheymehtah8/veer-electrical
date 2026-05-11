@@ -177,11 +177,13 @@ async function start() {
           }
           sent.push(item.id);
           console.log(`📤 [${SENDER_ID}] ${item.phone}: ${p.type}`);
-          // Anti-ban: random 8-25s for blast messages, 1-3s for bot replies
-          const isBlast = !!p.broadcast_id;
+          // Anti-ban: random 8-25s for blast messages, 1-3s for bot replies.
+          // broadcast_id arrives at the top level of `item` (not inside payload).
+          const isBlast = !!item.broadcast_id;
           const delay = isBlast
             ? 8000 + Math.random() * 17000
             : 1000 + Math.random() * 2000;
+          console.log(`   ⏳ ${isBlast ? "BLAST" : "BOT"} delay ${Math.round(delay/1000)}s`);
           await new Promise((res) => setTimeout(res, delay));
         } catch (e) {
           const reason = (e && e.message) ? String(e.message).slice(0, 250) : "send failed";

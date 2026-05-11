@@ -1219,12 +1219,20 @@ async def whatsapp_outbox(
         query = {"status": "pending", "sender_id": sid}
     items = await db.outbox.find(
         query,
-        {"_id": 1, "phone": 1, "payload": 1, "created_at": 1, "sender_id": 1},
+        {"_id": 1, "phone": 1, "payload": 1, "created_at": 1, "sender_id": 1, "broadcast_id": 1},
     ).sort("created_at", 1).to_list(limit)
     ids = [i["_id"] for i in items]
     if ids:
         await db.outbox.update_many({"_id": {"$in": ids}}, {"$set": {"status": "sending"}})
-    return {"messages": [{"id": i["_id"], "phone": i["phone"], "payload": i["payload"]} for i in items]}
+    return {"messages": [
+        {
+            "id": i["_id"],
+            "phone": i["phone"],
+            "payload": i["payload"],
+            "broadcast_id": i.get("broadcast_id"),  # so worker can apply 8–25s anti-ban delay
+        }
+        for i in items
+    ]}
 
 @api.post("/whatsapp/ack")
 async def whatsapp_ack(body: Dict[str, Any], x_webhook_secret: Optional[str] = Header(None)):
