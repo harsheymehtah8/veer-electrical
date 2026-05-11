@@ -486,8 +486,20 @@ export default function Broadcaster() {
           <Send className="w-5 h-5 mr-2" /> Start Blast ({contacts.length})
         </Button>
       ) : (
-        <div className="bg-white rounded-3xl border border-gray-200 p-4 space-y-3" data-testid="blast-progress">
-          <div className="flex items-center justify-between">
+        <div className="bg-white rounded-3xl border border-gray-200 p-4 space-y-3 relative" data-testid="blast-progress">
+          <button
+            onClick={() => {
+              if (pollRef.current) clearInterval(pollRef.current);
+              setJob(null);
+              toast.success("Ready for next blast");
+            }}
+            className="absolute -top-2 -right-2 w-8 h-8 rounded-full bg-white border border-gray-300 shadow-md flex items-center justify-center press-fx hover:bg-gray-50"
+            aria-label="Dismiss and start new blast"
+            data-testid="dismiss-progress-btn"
+          >
+            <X className="w-4 h-4 text-gray-600" />
+          </button>
+          <div className="flex items-center justify-between pr-6">
             <span className="text-sm font-medium">Status: {job.status}</span>
             <span className="text-xs text-gray-500">{job.sent + job.failed}/{job.total}</span>
           </div>
@@ -501,8 +513,10 @@ export default function Broadcaster() {
               <Pause className="w-4 h-4 mr-2" /> Pause
             </Button>
           )}
-          {job.status === "done" && (
-            <Button onClick={() => setJob(null)} className="w-full rounded-full h-11 bg-emerald-600 press-fx" data-testid="new-blast-btn">New blast</Button>
+          {(job.status === "done" || job.status === "queued_to_workers") && (
+            <Button onClick={() => setJob(null)} className="w-full rounded-full h-11 bg-emerald-600 press-fx" data-testid="new-blast-btn">
+              <Send className="w-4 h-4 mr-2" /> Start New Blast
+            </Button>
           )}
         </div>
       )}
