@@ -60,6 +60,11 @@ Indian electrical-goods wholesaler needs a mobile-first dashboard to:
 - ✅ **Failure reasons surfaced** — worker now sends `failed: [{id, reason}]`, backend stores `error_reason` on outbox, Queue page renders ⚠ reason on each failed message; pre-flight `sock.onWhatsApp()` check in worker catches "Not registered on WhatsApp" before send
 - ✅ Tests: `/app/backend/tests/test_broadcast_validation_and_ack.py` — 9/9 + 7/7 frontend flows passing
 
+## 2026-05-11 — UX polish + media type fix (P0)
+- ✅ **Dismissible status card** on Blast page — floating ✕ button + "Start New Blast" button now appear so the status doesn't permanently replace the Start Blast button
+- ✅ **Media-type detection fix** — JPEG/PNG/MP4/MP3 attachments were being sent as `application/pdf` causing recipients to see broken files. Backend now detects extension and sets correct `type` + `mimetype` on payload; worker branches on `image | video | audio | pdf | document` and uses Baileys' correct send method for each
+- ✅ **Cancel Queue button** on Live Queue page — `POST /api/whatsapp/queue/cancel-pending` marks all pending+sending outbox items as `cancelled` so workers skip them; button only appears when there are pending items; per-item reason "Cancelled by user" shown in Recent activity
+
 ## Backlog (P0/P1/P2)
 
 ### P0 (next, before scaling)

@@ -1,12 +1,15 @@
 import { useEffect, useState } from "react";
 import api from "@/lib/api";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, FileText, Clock, CheckCircle2, XCircle, Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { toast } from "sonner";
+import { ArrowLeft, FileText, Clock, CheckCircle2, XCircle, Loader2, Ban } from "lucide-react";
 
 export default function Queue() {
   const [stats, setStats] = useState({ totals: { pending: 0, sending: 0, sent: 0, failed: 0 }, by_sender: {} });
   const [recent, setRecent] = useState([]);
   const [senders, setSenders] = useState([]);
+  const [cancelling, setCancelling] = useState(false);
   const nav = useNavigate();
 
   const load = async () => {
@@ -48,8 +51,29 @@ export default function Queue() {
         return { c: "bg-emerald-50 text-emerald-700", Icon: CheckCircle2, label: "Sent" };
       case "failed":
         return { c: "bg-red-50 text-red-700", Icon: XCircle, label: "Failed" };
+      case "cancelled":
+        return { c: "bg-gray-100 text-gray-600", Icon: Ban, label: "Cancelled" };
       default:
         return { c: "bg-gray-50 text-gray-700", Icon: Clock, label: s };
+    }
+  };
+
+  const cancelQueue = async () => {
+    const pendingNow = (stats.totals.pending || 0) + (stats.totals.sending || 0);
+    if (pendingNow === 0) {
+      toast("No pending messages to cancel");
+      return;
+    }
+    if (!window.confirm(`Cancel ${pendingNow} pending message${pendingNow > 1 ? "s" : ""}?\nAlready-sent messages won't be affected.`)) return;
+    setCancelling(true);
+    try {
+      const r = await api.post("/whatsapp/queue/cancel-pending");
+      toast.success(`Cancelled ${r.data.cancelled} message${r.data.cancelled !== 1 ? "s" : ""}`);
+      load();
+    } catch {
+      toast.error("Failed to cancel queue");
+    } finally {
+      setCancelling(false);
     }
   };
 
@@ -59,10 +83,22 @@ export default function Queue() {
         <button onClick={() => nav(-1)} className="w-10 h-10 rounded-full bg-white border border-gray-200 flex items-center justify-center press-fx" data-testid="back-btn">
           <ArrowLeft className="w-5 h-5" />
         </button>
-        <div>
+        <div className="flex-1">
           <h1 className="font-[Manrope] text-2xl font-bold tracking-tight text-gray-900">Live Queue</h1>
           <p className="text-xs text-gray-500">Auto-refreshes every 3s • 8–25s delay between sends</p>
         </div>
+        {((stats.totals.pending || 0) + (stats.totals.sending || 0)) > 0 && (
+          <Button
+            onClick={cancelQueue}
+            disabled={cancelling}
+            variant="outline"
+            className="rounded-full h-10 border-red-200 text-red-600 hover:bg-red-50 press-fx"
+            data-testid="cancel-queue-btn"
+          >
+            <Ban className="w-4 h-4 mr-1" />
+            {cancelling ? "Cancelling..." : "Cancel"}
+          </Button>
+        )}
       </div>
 
       {/* Totals */}

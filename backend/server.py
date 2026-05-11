@@ -1106,6 +1106,23 @@ async def worker_status():
     last_seen = max([s.get("last_seen") for s in senders if s.get("last_seen")], default=None)
     return {"online": any_online, "last_seen": last_seen, "sender_count": len(senders)}
 
+@api.post("/whatsapp/queue/cancel-pending")
+async def cancel_pending_queue():
+    """Cancel all pending messages in the outbox.
+    Marks them as 'cancelled' so workers won't pick them up.
+    Already-sent or in-flight messages are not affected.
+    """
+    res = await db.outbox.update_many(
+        {"status": {"$in": ["pending", "sending"]}},
+        {"$set": {"status": "cancelled", "cancelled_at": now_iso(), "error_reason": "Cancelled by user"}},
+    )
+    # Also mark any 'running' broadcasts as cancelled
+    await db.broadcasts.update_many(
+        {"status": {"$in": ["running", "queued_to_workers"]}},
+        {"$set": {"status": "cancelled", "cancelled_at": now_iso()}},
+    )
+    return {"cancelled": res.modified_count}
+
 @api.post("/whatsapp/regenerate-secret")
 async def regenerate_secret():
     new_secret = uuid.uuid4().hex
