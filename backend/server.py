@@ -169,6 +169,22 @@ async def load_file_bytes(rec: Dict[str, Any]) -> Optional[Tuple[bytes, str]]:
 @app.on_event("startup")
 async def _startup_init_storage():
     init_storage()
+    # Indexes for fast search across 40k+ contacts
+    try:
+        await db.contacts.create_index("mobile", unique=False, sparse=True)
+        await db.contacts.create_index("source")
+        await db.contacts.create_index("created_at")
+        await db.contacts.create_index([("name", 1)])
+        await db.contacts.create_index([("shop_name", 1)])
+        await db.contacts.create_index([("city", 1)])
+        await db.contacts.create_index([("state", 1)])
+        await db.outbox.create_index("status")
+        await db.outbox.create_index("sender_id")
+        await db.outbox.create_index("broadcast_id")
+        await db.outbox.create_index("created_at")
+        logger.info("✅ MongoDB indexes ensured")
+    except Exception as e:
+        logger.error(f"Index create failed: {e}")
 
 
 def now_iso():
@@ -462,7 +478,11 @@ def normalize_phone(raw: str) -> str:
 @api.get("/contacts")
 async def list_contacts(q: Optional[str] = None, source: Optional[str] = None,
                         city: Optional[str] = None, state: Optional[str] = None,
-                        limit: int = 1000, skip: int = 0):
+                        limit: int = 200, skip: int = 0):
+    # Cap server-side to keep responses snappy even with 40k+ contacts.
+    # UI is responsible for narrowing via q/source/skip.
+    limit = max(1, min(limit, 500))
+    skip = max(0, skip)
     query: Dict[str, Any] = {}
     if source:
         query["source"] = source

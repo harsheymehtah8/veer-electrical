@@ -18,12 +18,14 @@ export default function Groups() {
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
 
-  // Add-contacts picker state
+  // Add-contacts picker state (server-side search — scales to 40k+ contacts)
   const [picker, setPicker] = useState(false);
-  const [allContacts, setAllContacts] = useState([]);
+  const [pickerLoading, setPickerLoading] = useState(false);
+  const [pickerResults, setPickerResults] = useState([]);  // current page (max 200)
+  const [pickerTotal, setPickerTotal] = useState(0);        // total matching server-side
   const [pickerSrcFilter, setPickerSrcFilter] = useState("all");
   const [pickerSearch, setPickerSearch] = useState("");
-  const [pickerSel, setPickerSel] = useState({});
+  const [pickerSel, setPickerSel] = useState({});           // {id: contactObj}  — persists across searches
 
   const nav = useNavigate();
 
@@ -73,16 +75,38 @@ export default function Groups() {
     openDetails({ id: openGroup.id });
   };
 
-  const openContactPicker = async () => {
-    // Load up to 5000 contacts — covers virtually all SMBs. If more, user must search.
-    const r = await api.get("/contacts", { params: { limit: 5000 } });
-    setAllContacts(r.data.items || []);
+  const openContactPicker = () => {
     setPickerSel({});
+    setPickerSearch("");
+    setPickerSrcFilter("all");
     setPicker(true);
   };
 
+  // Server-side search — re-queries the API when search or filter changes.
+  // Loads max 200 results per query; if more match, user must narrow search.
+  useEffect(() => {
+    if (!picker) return;
+    setPickerLoading(true);
+    const t = setTimeout(async () => {
+      try {
+        const params = { limit: 200 };
+        if (pickerSearch.trim()) params.q = pickerSearch.trim();
+        if (pickerSrcFilter !== "all") params.source = pickerSrcFilter;
+        const r = await api.get("/contacts", { params });
+        setPickerResults(r.data.items || []);
+        setPickerTotal(r.data.total || 0);
+      } catch {
+        setPickerResults([]);
+        setPickerTotal(0);
+      } finally {
+        setPickerLoading(false);
+      }
+    }, 250);
+    return () => clearTimeout(t);
+  }, [picker, pickerSearch, pickerSrcFilter]);
+
   const commitAdd = async () => {
-    const ids = Object.keys(pickerSel).filter((k) => pickerSel[k]);
+    const ids = Object.keys(pickerSel);
     if (ids.length === 0) {
       setPicker(false);
       return;
@@ -97,13 +121,8 @@ export default function Groups() {
     }
   };
 
-  const filteredPicker = allContacts.filter((c) => {
-    if (pickerSrcFilter !== "all" && c.source !== pickerSrcFilter) return false;
-    if (!pickerSearch) return true;
-    const s = pickerSearch.toLowerCase();
-    return [c.name, c.shop_name, c.mobile, c.city, c.state, c.district].some((v) => (v || "").toLowerCase().includes(s));
-  });
   const alreadyIn = new Set(openGroup?.contacts?.map((c) => c.id) || []);
+  const selectedCount = Object.keys(pickerSel).length;
 
   const startBlastFromGroup = () => {
     const ids = (openGroup?.contacts || []).map((c) => c.id);
@@ -227,19 +246,29 @@ export default function Groups() {
         </DialogContent>
       </Dialog>
 
-      {/* Add contacts picker */}
+      {/* Add contacts picker — server-side search, scales to 40k+ contacts */}
       <Dialog open={picker} onOpenChange={setPicker}>
         <DialogContent className="max-w-md rounded-3xl">
           <DialogHeader>
             <DialogTitle>Add contacts</DialogTitle>
             <DialogDescription>
-              Pick contacts to add to "{openGroup?.name}" — {filteredPicker.length} of {allContacts.length} shown
+              {pickerLoading
+                ? "Searching..."
+                : `Showing ${pickerResults.length} of ${pickerTotal.toLocaleString()} matching contacts`}
+              {selectedCount > 0 && ` • ${selectedCount} selected`}
             </DialogDescription>
           </DialogHeader>
           <div className="flex gap-2">
             <div className="relative flex-1">
               <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-              <Input value={pickerSearch} onChange={(e) => setPickerSearch(e.target.value)} placeholder="Search name, mobile, city..." className="pl-9 h-10 rounded-full" data-testid="picker-search" />
+              <Input
+                value={pickerSearch}
+                onChange={(e) => setPickerSearch(e.target.value)}
+                placeholder="Search name, mobile, city, state..."
+                className="pl-9 h-10 rounded-full"
+                data-testid="picker-search"
+                autoFocus
+              />
             </div>
             <Select value={pickerSrcFilter} onValueChange={setPickerSrcFilter}>
               <SelectTrigger className="w-28 rounded-full h-10" data-testid="picker-source-filter"><SelectValue /></SelectTrigger>
@@ -251,47 +280,62 @@ export default function Groups() {
               </SelectContent>
             </Select>
           </div>
-          <div className="flex items-center justify-between text-xs px-1">
-            <button
-              type="button"
-              onClick={() => {
-                const eligible = filteredPicker.filter((c) => !alreadyIn.has(c.id));
-                const next = {};
-                eligible.forEach((c) => { next[c.id] = true; });
-                setPickerSel(next);
-              }}
-              className="text-emerald-700 font-semibold press-fx"
-              data-testid="picker-select-all"
-            >
-              Select all {filteredPicker.filter((c) => !alreadyIn.has(c.id)).length}
-            </button>
-            <button
-              type="button"
-              onClick={() => setPickerSel({})}
-              className="text-gray-500 press-fx"
-              data-testid="picker-clear-sel"
-            >
-              Clear
-            </button>
-          </div>
-          <div className="max-h-[60vh] overflow-auto space-y-1.5" data-testid="picker-contacts">
-            {filteredPicker.length === 0 && (
+          {pickerResults.length > 0 && (
+            <div className="flex items-center justify-between text-xs px-1">
+              <button
+                type="button"
+                onClick={() => {
+                  const next = { ...pickerSel };
+                  pickerResults
+                    .filter((c) => !alreadyIn.has(c.id))
+                    .forEach((c) => { next[c.id] = c; });
+                  setPickerSel(next);
+                }}
+                className="text-emerald-700 font-semibold press-fx"
+                data-testid="picker-select-all"
+              >
+                Select all {pickerResults.filter((c) => !alreadyIn.has(c.id)).length} shown
+              </button>
+              <button
+                type="button"
+                onClick={() => setPickerSel({})}
+                className="text-gray-500 press-fx"
+                data-testid="picker-clear-sel"
+              >
+                Clear selection
+              </button>
+            </div>
+          )}
+          {pickerTotal > pickerResults.length && (
+            <p className="text-[11px] text-amber-600 px-1">
+              ⚠ {(pickerTotal - pickerResults.length).toLocaleString()} more contacts match — narrow your search to see them.
+            </p>
+          )}
+          <div className="max-h-[55vh] overflow-auto space-y-1.5" data-testid="picker-contacts">
+            {pickerLoading && pickerResults.length === 0 && (
+              <div className="text-center text-sm text-gray-400 py-8">Loading...</div>
+            )}
+            {!pickerLoading && pickerResults.length === 0 && (
               <div className="text-center text-sm text-gray-500 py-8">
-                {allContacts.length === 0
-                  ? "No contacts yet. Add some from the Contacts page first."
-                  : "No contacts match this filter."}
+                {pickerSearch ? `No contacts match "${pickerSearch}"` : "No contacts yet — add some from the Contacts page first."}
               </div>
             )}
-            {filteredPicker.map((c) => {
+            {pickerResults.map((c) => {
               const inGroup = alreadyIn.has(c.id);
+              const selected = !!pickerSel[c.id];
               return (
                 <label key={c.id} className={`flex items-center gap-2 p-2 rounded-xl ${inGroup ? "bg-emerald-50 opacity-50" : "bg-gray-50 cursor-pointer"}`}>
                   <input
                     type="checkbox"
                     className="w-5 h-5 accent-emerald-600"
-                    checked={inGroup || !!pickerSel[c.id]}
+                    checked={inGroup || selected}
                     disabled={inGroup}
-                    onChange={(e) => setPickerSel({ ...pickerSel, [c.id]: e.target.checked })}
+                    onChange={(e) => {
+                      const next = { ...pickerSel };
+                      if (e.target.checked) next[c.id] = c;
+                      else delete next[c.id];
+                      setPickerSel(next);
+                    }}
                     data-testid={`pick-${c.id}`}
                   />
                   <div className="flex-1 min-w-0">
@@ -302,8 +346,13 @@ export default function Groups() {
               );
             })}
           </div>
-          <Button onClick={commitAdd} className="w-full h-11 rounded-full bg-emerald-600 hover:bg-emerald-700" data-testid="commit-add-btn">
-            Add {Object.values(pickerSel).filter(Boolean).length} selected
+          <Button
+            onClick={commitAdd}
+            disabled={selectedCount === 0}
+            className="w-full h-11 rounded-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50"
+            data-testid="commit-add-btn"
+          >
+            Add {selectedCount} selected
           </Button>
         </DialogContent>
       </Dialog>

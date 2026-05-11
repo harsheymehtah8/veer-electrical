@@ -25,6 +25,7 @@ export default function Broadcaster() {
   const [attachment, setAttachment] = useState(draft.attachment || null);
   const [job, setJob] = useState(null);
   const [savedLeads, setSavedLeads] = useState([]);
+  const [leadsTotal, setLeadsTotal] = useState(0);
   const [pickerSel, setPickerSel] = useState({});
   const [senders, setSenders] = useState([]);
   const [pickedSender, setPickedSender] = useState(draft.pickedSender || "auto");
@@ -48,10 +49,13 @@ export default function Broadcaster() {
 
   useEffect(() => {
     if (tab === "leads") {
-      const params = { limit: 500 };
+      const params = { limit: 200 };
       if (leadsSearch) params.q = leadsSearch;
       if (leadsSrcFilter !== "all") params.source = leadsSrcFilter;
-      api.get("/contacts", { params }).then((r) => setSavedLeads(r.data.items || []));
+      api.get("/contacts", { params }).then((r) => {
+        setSavedLeads(r.data.items || []);
+        setLeadsTotal(r.data.total || 0);
+      });
     }
     if (tab === "groups") {
       api.get("/groups", { params: { q: groupSearch || undefined } }).then((r) => setGroups(r.data));
@@ -314,6 +318,11 @@ export default function Broadcaster() {
                 </label>
               ))}
             </div>
+            {leadsTotal > savedLeads.length && (
+              <p className="text-[11px] text-amber-600 text-center" data-testid="leads-truncated-hint">
+                ⚠ Showing first {savedLeads.length.toLocaleString()} of {leadsTotal.toLocaleString()} — narrow search to see more.
+              </p>
+            )}
             <Button onClick={addFromLeads} className="w-full h-11 rounded-full bg-emerald-600 hover:bg-emerald-700 press-fx" data-testid="add-from-leads-btn">
               Add selected
             </Button>

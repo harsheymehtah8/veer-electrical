@@ -34,7 +34,7 @@ export default function Contacts() {
   const importFileRef = useRef(null);
 
   const load = async () => {
-    const params = { q: q || undefined, source: sourceFilter === "all" ? undefined : sourceFilter };
+    const params = { q: q || undefined, source: sourceFilter === "all" ? undefined : sourceFilter, limit: 200 };
     const [r, s] = await Promise.all([
       api.get("/contacts", { params }),
       api.get("/contacts/stats"),
@@ -167,7 +167,9 @@ export default function Contacts() {
         </Select>
       </div>
 
-      <p className="text-xs text-gray-400">{total} matching</p>
+      <p className="text-xs text-gray-400" data-testid="contacts-match-count">
+        {total.toLocaleString()} matching • showing first {Math.min(contacts.length, total).toLocaleString()}
+      </p>
 
       {/* List */}
       <div className="space-y-2" data-testid="contacts-list">
@@ -202,6 +204,11 @@ export default function Contacts() {
             </div>
           </div>
         ))}
+        {total > contacts.length && (
+          <div className="text-center text-xs text-amber-600 pt-3 pb-1" data-testid="contacts-truncated-hint">
+            ⚠ {(total - contacts.length).toLocaleString()} more match — use search to find specific contacts.
+          </div>
+        )}
       </div>
 
       {/* Add/Edit Dialog */}
