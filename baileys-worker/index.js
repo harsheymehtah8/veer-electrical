@@ -52,6 +52,8 @@ async function start() {
 
   sock.ev.on("creds.update", saveCreds);
 
+  let connectedAt = 0; // Timestamp when 'open' event last fired
+
   sock.ev.on("connection.update", async (u) => {
     const { connection, lastDisconnect, qr } = u;
     if (qr) {
@@ -59,6 +61,7 @@ async function start() {
       qrcode.generate(qr, { small: true });
     }
     if (connection === "open") {
+      connectedAt = Date.now();
       const myNumber = sock.user?.id?.split(":")[0]?.split("@")[0] || "";
       console.log(`✅ [${SENDER_ID}] WhatsApp connected as +${myNumber}. Worker LIVE.`);
       // Register sender in dashboard
@@ -105,6 +108,12 @@ async function start() {
   // ---- Poll outbox for messages tagged with MY sender_id ----
   setInterval(async () => {
     try {
+      // Warm-up: don't send anything in the first 30s after a fresh connection.
+      // Gives WhatsApp server time to propagate new sender keys to recipients,
+      // preventing "Waiting for this message" on the receiving end.
+      if (connectedAt > 0 && Date.now() - connectedAt < 30000) {
+        return;
+      }
       const r = await veer.get("/api/whatsapp/outbox", { params: { sender_id: SENDER_ID, limit: 20 } });
       const msgs = r.data.messages || [];
       const sent = [];
@@ -125,6 +134,20 @@ async function start() {
           }
           if (!onWA) {
             throw new Error("Not registered on WhatsApp");
+          }
+          // ⭐ Pre-establish the Signal encryption session BEFORE sending.
+          // Fixes "Waiting for this message" on recipient side — happens when sender
+          // has a fresh identity (recently re-linked SIM) and recipient hasn't yet
+          // received the new pre-keys. assertSessions fetches pre-keys explicitly so
+          // the first message decrypts immediately.
+          try {
+            if (typeof sock.assertSessions === "function") {
+              await sock.assertSessions([jid], true);
+            }
+          } catch (sessErr) {
+            // Non-fatal — let the actual send try anyway. Common when contact has
+            // privacy settings restricting prekey access.
+            console.warn(`⚠️  [${SENDER_ID}] ${item.phone}: assertSessions warn: ${sessErr.message}`);
           }
           if (p.type === "text") {
             await sock.sendMessage(jid, { text: p.text });
