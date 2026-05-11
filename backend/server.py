@@ -1,5 +1,5 @@
 from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, Header, BackgroundTasks
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -9,9 +9,10 @@ import re
 import random
 import asyncio
 import logging
+import requests
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 import uuid
 from datetime import datetime, timezone
 import pandas as pd
@@ -31,6 +32,143 @@ api = APIRouter(prefix="/api")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+# ============ PERSISTENT OBJECT STORAGE (Emergent) ============
+# Files uploaded here survive redeploys, unlike /app/backend/uploads which is ephemeral.
+STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
+EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
+APP_NAME = "veer-electrical"
+_storage_key: Optional[str] = None
+
+MIME_TYPES = {
+    "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+    "gif": "image/gif", "webp": "image/webp", "pdf": "application/pdf",
+    "mp4": "video/mp4", "mov": "video/quicktime", "3gp": "video/3gpp",
+    "mp3": "audio/mpeg", "ogg": "audio/ogg", "wav": "audio/wav", "m4a": "audio/mp4",
+    "json": "application/json", "csv": "text/csv", "txt": "text/plain",
+}
+
+
+def init_storage() -> Optional[str]:
+    """Initialise once; reuse storage_key for subsequent put/get calls."""
+    global _storage_key
+    if _storage_key:
+        return _storage_key
+    if not EMERGENT_KEY:
+        logger.warning("EMERGENT_LLM_KEY not set — falling back to local disk storage (not persistent)")
+        return None
+    try:
+        r = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_KEY}, timeout=30)
+        r.raise_for_status()
+        _storage_key = r.json()["storage_key"]
+        logger.info("✅ Emergent object storage initialised")
+        return _storage_key
+    except Exception as e:
+        logger.error(f"Storage init failed: {e}")
+        return None
+
+
+def put_object(path: str, data: bytes, content_type: str) -> Optional[Dict[str, Any]]:
+    key = init_storage()
+    if not key:
+        return None
+    try:
+        r = requests.put(
+            f"{STORAGE_URL}/objects/{path}",
+            headers={"X-Storage-Key": key, "Content-Type": content_type},
+            data=data, timeout=120,
+        )
+        if r.status_code == 403:
+            # Stale key — re-init once and retry
+            global _storage_key
+            _storage_key = None
+            key = init_storage()
+            if key:
+                r = requests.put(
+                    f"{STORAGE_URL}/objects/{path}",
+                    headers={"X-Storage-Key": key, "Content-Type": content_type},
+                    data=data, timeout=120,
+                )
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        logger.error(f"put_object({path}) failed: {e}")
+        return None
+
+
+def get_object(path: str) -> Optional[Tuple[bytes, str]]:
+    key = init_storage()
+    if not key:
+        return None
+    try:
+        r = requests.get(
+            f"{STORAGE_URL}/objects/{path}",
+            headers={"X-Storage-Key": key}, timeout=60,
+        )
+        if r.status_code == 403:
+            global _storage_key
+            _storage_key = None
+            key = init_storage()
+            if key:
+                r = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
+        r.raise_for_status()
+        return r.content, r.headers.get("Content-Type", "application/octet-stream")
+    except Exception as e:
+        logger.error(f"get_object({path}) failed: {e}")
+        return None
+
+
+async def save_uploaded_file(file: UploadFile) -> Dict[str, Any]:
+    """Save an UploadFile to persistent storage with local-disk fallback.
+    Returns the file metadata dict to store in MongoDB.
+    """
+    file_id = new_id()
+    filename = file.filename or f"upload-{file_id}"
+    ext = (Path(filename).suffix.lstrip(".") or "bin").lower()
+    content = await file.read()
+    content_type = file.content_type or MIME_TYPES.get(ext, "application/octet-stream")
+
+    storage_path = f"{APP_NAME}/uploads/{file_id}.{ext}"
+    result = put_object(storage_path, content, content_type)
+
+    meta: Dict[str, Any] = {
+        "_id": file_id,
+        "filename": filename,
+        "content_type": content_type,
+        "size": len(content),
+        "uploaded_at": now_iso(),
+    }
+    if result and result.get("path"):
+        meta["storage_path"] = result["path"]
+    else:
+        # Fallback: write to local disk so dev/preview still works without keys
+        save_path = UPLOAD_DIR / f"{file_id}.{ext}"
+        save_path.write_bytes(content)
+        meta["path"] = str(save_path)
+    return meta
+
+
+async def load_file_bytes(rec: Dict[str, Any]) -> Optional[Tuple[bytes, str]]:
+    """Return (bytes, content_type) for a file record, trying persistent storage first."""
+    sp = rec.get("storage_path")
+    if sp:
+        got = get_object(sp)
+        if got:
+            return got
+    # Legacy local-disk path
+    p = rec.get("path")
+    if p:
+        path_obj = Path(p)
+        if path_obj.exists():
+            ct = rec.get("content_type") or "application/octet-stream"
+            return path_obj.read_bytes(), ct
+    return None
+
+
+@app.on_event("startup")
+async def _startup_init_storage():
+    init_storage()
 
 
 def now_iso():
@@ -223,12 +361,9 @@ async def delete_series(range_id: str, brand_id: str, series_id: str):
 
 @api.post("/catalog/range/{range_id}/brand/{brand_id}/series/{series_id}/pdf")
 async def upload_pdf(range_id: str, brand_id: str, series_id: str, file: UploadFile = File(...)):
-    file_id = new_id()
-    ext = Path(file.filename).suffix or ".pdf"
-    save_path = UPLOAD_DIR / f"{file_id}{ext}"
-    content = await file.read()
-    save_path.write_bytes(content)
-    await db.files.insert_one({"_id": file_id, "filename": file.filename, "path": str(save_path), "uploaded_at": now_iso()})
+    meta = await save_uploaded_file(file)
+    await db.files.insert_one(meta)
+    file_id = meta["_id"]
     # Update series in catalog
     range_doc = await db.ranges.find_one({"_id": range_id})
     if not range_doc:
@@ -238,19 +373,25 @@ async def upload_pdf(range_id: str, brand_id: str, series_id: str, file: UploadF
             for s in brand.get("series", []):
                 if s["id"] == series_id:
                     s["pdf_id"] = file_id
-                    s["pdf_filename"] = file.filename
+                    s["pdf_filename"] = meta["filename"]
     await db.ranges.update_one({"_id": range_id}, {"$set": {"brands": range_doc["brands"]}})
-    return {"file_id": file_id, "filename": file.filename}
+    return {"file_id": file_id, "filename": meta["filename"]}
 
 @api.get("/files/{file_id}")
 async def serve_file(file_id: str):
     rec = await db.files.find_one({"_id": file_id})
     if not rec:
         raise HTTPException(404)
-    p = Path(rec["path"])
-    if not p.exists():
-        raise HTTPException(404)
-    return FileResponse(str(p), filename=rec["filename"])
+    got = await load_file_bytes(rec)
+    if not got:
+        raise HTTPException(404, "File data missing")
+    data, content_type = got
+    filename = rec.get("filename", "file")
+    return Response(
+        content=data,
+        media_type=content_type,
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
 
 # ============ LEADS ============
 @api.get("/leads")
@@ -1177,13 +1318,9 @@ async def parse_paste(payload: Dict[str, str]):
 
 @api.post("/broadcast/upload-attachment")
 async def upload_attachment(file: UploadFile = File(...)):
-    file_id = new_id()
-    ext = Path(file.filename).suffix
-    save_path = UPLOAD_DIR / f"{file_id}{ext}"
-    content = await file.read()
-    save_path.write_bytes(content)
-    await db.files.insert_one({"_id": file_id, "filename": file.filename, "path": str(save_path), "uploaded_at": now_iso()})
-    return {"file_id": file_id, "filename": file.filename}
+    meta = await save_uploaded_file(file)
+    await db.files.insert_one(meta)
+    return {"file_id": meta["_id"], "filename": meta["filename"]}
 
 async def run_broadcast(job_id: str):
     job = await db.broadcasts.find_one({"_id": job_id})
