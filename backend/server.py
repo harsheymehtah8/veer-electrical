@@ -606,6 +606,9 @@ async def import_commit(payload: Dict[str, Any]):
     if not staged:
         raise HTTPException(404, "Import file not found or expired")
     rows = staged.get("rows", [])
+    # Tag every imported contact with the original filename so the user can later
+    # bulk-delete by file (e.g. delete everything from "telangana.xlsx").
+    batch_name = staged.get("filename") or f"import-{file_id[:8]}"
     inserted = 0
     merged = 0
     skipped = 0
@@ -625,10 +628,15 @@ async def import_commit(payload: Dict[str, Any]):
             "district": col_val("district"),
             "state": col_val("state"),
             "source": "imported",
+            "import_batch": batch_name,
             "updated_at": now_iso(),
         }
         if existing:
-            await db.contacts.update_one({"id": existing["id"]}, {"$set": {k: v for k, v in contact_data.items() if v}})
+            # Don't overwrite an existing batch tag — keep the first one
+            update_data = {k: v for k, v in contact_data.items() if v}
+            if existing.get("import_batch"):
+                update_data.pop("import_batch", None)
+            await db.contacts.update_one({"id": existing["id"]}, {"$set": update_data})
             merged += 1
         else:
             contact_data["id"] = new_id()
@@ -637,7 +645,62 @@ async def import_commit(payload: Dict[str, Any]):
             inserted += 1
     # Cleanup staged file
     await db.import_staging.delete_one({"_id": file_id})
-    return {"inserted": inserted, "merged": merged, "skipped": skipped, "total": len(rows)}
+    return {"inserted": inserted, "merged": merged, "skipped": skipped, "total": len(rows), "batch": batch_name}
+
+@api.get("/contacts/import-batches")
+async def list_import_batches():
+    """List all distinct import batches (filenames) with counts.
+    Lets the UI offer 'Delete everything from telangana.xlsx'.
+    """
+    pipeline = [
+        {"$match": {"source": "imported", "import_batch": {"$exists": True, "$ne": None, "$nin": ["", None]}}},
+        {"$group": {"_id": "$import_batch", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+        {"$limit": 100},
+    ]
+    rows = await db.contacts.aggregate(pipeline).to_list(100)
+    return [{"name": r["_id"], "count": r["count"]} for r in rows]
+
+
+def _build_bulk_filter(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Translate the bulk-delete payload into a MongoDB filter."""
+    f: Dict[str, Any] = {}
+    if payload.get("source"):
+        f["source"] = payload["source"]
+    if payload.get("import_batch"):
+        f["import_batch"] = payload["import_batch"]
+    if payload.get("city"):
+        f["city"] = {"$regex": f"^{re.escape(payload['city'].strip())}$", "$options": "i"}
+    if payload.get("state"):
+        f["state"] = {"$regex": f"^{re.escape(payload['state'].strip())}$", "$options": "i"}
+    if payload.get("district"):
+        f["district"] = {"$regex": f"^{re.escape(payload['district'].strip())}$", "$options": "i"}
+    return f
+
+
+@api.post("/contacts/bulk-delete/preview")
+async def bulk_delete_preview(payload: Dict[str, Any]):
+    """Returns count + sample (first 5) of what would be deleted. Safety net before commit."""
+    f = _build_bulk_filter(payload)
+    if not f:
+        raise HTTPException(400, "At least one filter required (state/city/import_batch/source)")
+    count = await db.contacts.count_documents(f)
+    samples = await db.contacts.find(f, {"_id": 0, "name": 1, "shop_name": 1, "mobile": 1, "city": 1, "state": 1}).limit(5).to_list(5)
+    return {"count": count, "samples": samples, "filter": f}
+
+
+@api.post("/contacts/bulk-delete/commit")
+async def bulk_delete_commit(payload: Dict[str, Any]):
+    """Actually deletes contacts matching the filter. Same filter shape as preview."""
+    f = _build_bulk_filter(payload)
+    if not f:
+        raise HTTPException(400, "At least one filter required")
+    # Require an explicit confirm flag to prevent accidental {} deletes
+    if not payload.get("confirm"):
+        raise HTTPException(400, "confirm:true required")
+    res = await db.contacts.delete_many(f)
+    return {"deleted": res.deleted_count}
+
 
 @api.get("/contacts/export")
 async def export_contacts():

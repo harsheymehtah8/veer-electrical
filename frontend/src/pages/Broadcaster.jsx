@@ -312,6 +312,9 @@ export default function Broadcaster() {
                   />
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium truncate">{l.name || l.shop_name || l.party_name || "Unnamed"}</div>
+                    {l.name && l.shop_name && l.name !== l.shop_name && (
+                      <div className="text-[11px] text-gray-700 truncate">{l.shop_name}</div>
+                    )}
                     <div className="text-xs text-gray-500 truncate">+{l.mobile || l.phone} • {l.city} {l.state ? `• ${l.state}` : ""}</div>
                   </div>
                   <span className="text-[10px] uppercase tracking-wide text-gray-400">{l.source || "—"}</span>

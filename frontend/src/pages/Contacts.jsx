@@ -25,6 +25,13 @@ export default function Contacts() {
   // Add/Edit dialog
   const [editing, setEditing] = useState(null);
 
+  // Bulk-delete dialog state
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [batches, setBatches] = useState([]); // [{name, count}]
+  const [bulkFilter, setBulkFilter] = useState({ import_batch: "", state: "", city: "", source: "" });
+  const [bulkPreview, setBulkPreview] = useState(null); // {count, samples}
+  const [bulkBusy, setBulkBusy] = useState(false);
+
   const nav = useNavigate();
 
   // Import wizard
@@ -101,6 +108,58 @@ export default function Contacts() {
     load();
   };
 
+  // ---- Bulk delete ----
+  const openBulkDialog = async () => {
+    setBulkFilter({ import_batch: "", state: "", city: "", source: "" });
+    setBulkPreview(null);
+    setBulkOpen(true);
+    try {
+      const r = await api.get("/contacts/import-batches");
+      setBatches(r.data || []);
+    } catch {
+      setBatches([]);
+    }
+  };
+
+  const hasBulkFilter = !!(bulkFilter.import_batch || bulkFilter.state || bulkFilter.city || bulkFilter.source);
+
+  const runBulkPreview = async () => {
+    if (!hasBulkFilter) return toast.error("Pick at least one filter");
+    setBulkBusy(true);
+    try {
+      const body = {};
+      for (const k of ["import_batch", "state", "city", "source"]) {
+        if (bulkFilter[k]) body[k] = bulkFilter[k];
+      }
+      const r = await api.post("/contacts/bulk-delete/preview", body);
+      setBulkPreview(r.data);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Preview failed");
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const confirmBulkDelete = async () => {
+    if (!bulkPreview || !bulkPreview.count) return;
+    if (!window.confirm(`Delete ${bulkPreview.count.toLocaleString()} contacts? This cannot be undone.`)) return;
+    setBulkBusy(true);
+    try {
+      const body = { confirm: true };
+      for (const k of ["import_batch", "state", "city", "source"]) {
+        if (bulkFilter[k]) body[k] = bulkFilter[k];
+      }
+      const r = await api.post("/contacts/bulk-delete/commit", body);
+      toast.success(`Deleted ${r.data.deleted.toLocaleString()} contacts`);
+      setBulkOpen(false);
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Delete failed");
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   const saveContact = async () => {
     if (!editing.mobile?.trim()) return toast.error("Mobile required");
     if (editing.id) {
@@ -146,6 +205,9 @@ export default function Contacts() {
         <Button onClick={exportXlsx} variant="outline" className="rounded-full h-11 border-gray-200 press-fx" data-testid="export-btn">
           <Download className="w-4 h-4" />
         </Button>
+        <Button onClick={openBulkDialog} variant="outline" className="rounded-full h-11 border-red-200 text-red-600 hover:bg-red-50 press-fx" data-testid="bulk-delete-btn">
+          <Trash2 className="w-4 h-4" />
+        </Button>
       </div>
 
       {/* Search + filter */}
@@ -188,8 +250,13 @@ export default function Contacts() {
                   {SOURCE_LABEL[c.source] || c.source}
                 </span>
               </div>
-              {c.shop_name && c.name && <div className="text-xs text-gray-600 truncate">{c.shop_name}</div>}
+              {c.shop_name && c.name && <div className="text-xs text-gray-700 truncate font-medium">{c.shop_name}</div>}
               <div className="text-xs text-gray-500 truncate">+{c.mobile} {c.city ? `• ${c.city}` : ""} {c.state ? `• ${c.state}` : ""}</div>
+              {c.import_batch && (
+                <div className="text-[10px] text-violet-600 truncate mt-0.5" data-testid={`contact-batch-${c.id}`}>
+                  📄 {c.import_batch}
+                </div>
+              )}
             </div>
             <div className="flex flex-col gap-1.5">
               <a href={`tel:+${c.mobile}`} className="w-9 h-9 rounded-full bg-emerald-50 text-emerald-700 flex items-center justify-center press-fx" data-testid={`contact-call-${c.id}`}>
@@ -282,6 +349,127 @@ export default function Contacts() {
               </Button>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* ===== Bulk Delete Dialog ===== */}
+      <Dialog open={bulkOpen} onOpenChange={setBulkOpen}>
+        <DialogContent className="max-w-md rounded-3xl">
+          <DialogHeader>
+            <DialogTitle>Bulk delete contacts</DialogTitle>
+            <DialogDescription>
+              Pick any combination of filters. You'll see a preview count before anything is deleted.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            {/* Import batch */}
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-[0.15em] text-gray-500">By uploaded file</label>
+              <Select
+                value={bulkFilter.import_batch || "none"}
+                onValueChange={(v) => {
+                  setBulkFilter({ ...bulkFilter, import_batch: v === "none" ? "" : v });
+                  setBulkPreview(null);
+                }}
+              >
+                <SelectTrigger className="mt-1 h-11 rounded-2xl bg-gray-50 border-gray-200" data-testid="bulk-batch-select">
+                  <SelectValue placeholder="Select an imported file..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">— Any —</SelectItem>
+                  {batches.map((b) => (
+                    <SelectItem key={b.name} value={b.name}>
+                      {b.name} ({b.count.toLocaleString()})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {batches.length === 0 && (
+                <p className="text-[10px] text-gray-400 mt-1">No imported files tracked yet. Re-import to tag new files.</p>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-xs font-semibold uppercase tracking-[0.15em] text-gray-500">State</label>
+                <Input
+                  value={bulkFilter.state}
+                  onChange={(e) => { setBulkFilter({ ...bulkFilter, state: e.target.value }); setBulkPreview(null); }}
+                  placeholder="e.g. Telangana"
+                  className="mt-1 h-11 rounded-2xl bg-gray-50 border-gray-200"
+                  data-testid="bulk-state-input"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold uppercase tracking-[0.15em] text-gray-500">City</label>
+                <Input
+                  value={bulkFilter.city}
+                  onChange={(e) => { setBulkFilter({ ...bulkFilter, city: e.target.value }); setBulkPreview(null); }}
+                  placeholder="e.g. Mumbai"
+                  className="mt-1 h-11 rounded-2xl bg-gray-50 border-gray-200"
+                  data-testid="bulk-city-input"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-[0.15em] text-gray-500">Source</label>
+              <Select
+                value={bulkFilter.source || "any"}
+                onValueChange={(v) => {
+                  setBulkFilter({ ...bulkFilter, source: v === "any" ? "" : v });
+                  setBulkPreview(null);
+                }}
+              >
+                <SelectTrigger className="mt-1 h-11 rounded-2xl bg-gray-50 border-gray-200" data-testid="bulk-source-select">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="any">Any source</SelectItem>
+                  <SelectItem value="manual">Manual</SelectItem>
+                  <SelectItem value="imported">Imported</SelectItem>
+                  <SelectItem value="bot">Bot Lead</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Preview button + result */}
+            <Button
+              onClick={runBulkPreview}
+              disabled={!hasBulkFilter || bulkBusy}
+              className="w-full h-11 rounded-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50"
+              data-testid="bulk-preview-btn"
+            >
+              {bulkBusy ? "..." : "Preview matches"}
+            </Button>
+
+            {bulkPreview && (
+              <div className="bg-red-50 border border-red-200 rounded-2xl p-3 space-y-2" data-testid="bulk-preview-result">
+                <div className="flex items-baseline justify-between">
+                  <span className="text-sm font-semibold text-red-700">{bulkPreview.count.toLocaleString()} contacts will be deleted</span>
+                </div>
+                {bulkPreview.samples.length > 0 && (
+                  <div className="text-[11px] text-gray-700 space-y-0.5 max-h-32 overflow-auto">
+                    <div className="font-medium text-gray-600">Sample (first 5):</div>
+                    {bulkPreview.samples.map((s, i) => (
+                      <div key={i}>
+                        • {s.name || s.shop_name || "Unnamed"} — +{s.mobile} {s.city ? `(${s.city})` : ""}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <Button
+                  onClick={confirmBulkDelete}
+                  disabled={bulkBusy || !bulkPreview.count}
+                  className="w-full h-11 rounded-full bg-red-600 hover:bg-red-700 disabled:opacity-50"
+                  data-testid="bulk-confirm-btn"
+                >
+                  <Trash2 className="w-4 h-4 mr-1" />
+                  {bulkBusy ? "Deleting..." : `Delete ${bulkPreview.count.toLocaleString()} contacts permanently`}
+                </Button>
+              </div>
+            )}
+          </div>
         </DialogContent>
       </Dialog>
     </div>

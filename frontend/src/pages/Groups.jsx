@@ -339,7 +339,10 @@ export default function Groups() {
                     data-testid={`pick-${c.id}`}
                   />
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm truncate">{c.name || c.shop_name || c.mobile}</div>
+                    <div className="text-sm font-medium truncate">{c.name || c.shop_name || c.mobile}</div>
+                    {c.name && c.shop_name && c.name !== c.shop_name && (
+                      <div className="text-[11px] text-gray-700 truncate">{c.shop_name}</div>
+                    )}
                     <div className="text-xs text-gray-500 truncate">+{c.mobile} • {c.city} • {SOURCE_LABEL[c.source] || c.source}</div>
                   </div>
                 </label>
