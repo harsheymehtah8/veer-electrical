@@ -49,7 +49,7 @@ export default function Broadcaster() {
 
   useEffect(() => {
     if (tab === "leads") {
-      const params = { limit: 200 };
+      const params = { limit: 500 };
       if (leadsSearch) params.q = leadsSearch;
       if (leadsSrcFilter !== "all") params.source = leadsSrcFilter;
       api.get("/contacts", { params }).then((r) => {

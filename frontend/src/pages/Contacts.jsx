@@ -34,7 +34,7 @@ export default function Contacts() {
   const importFileRef = useRef(null);
 
   const load = async () => {
-    const params = { q: q || undefined, source: sourceFilter === "all" ? undefined : sourceFilter, limit: 200 };
+    const params = { q: q || undefined, source: sourceFilter === "all" ? undefined : sourceFilter, limit: 500 };
     const [r, s] = await Promise.all([
       api.get("/contacts", { params }),
       api.get("/contacts/stats"),

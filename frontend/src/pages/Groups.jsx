@@ -89,7 +89,7 @@ export default function Groups() {
     setPickerLoading(true);
     const t = setTimeout(async () => {
       try {
-        const params = { limit: 200 };
+        const params = { limit: 500 };
         if (pickerSearch.trim()) params.q = pickerSearch.trim();
         if (pickerSrcFilter !== "all") params.source = pickerSrcFilter;
         const r = await api.get("/contacts", { params });
