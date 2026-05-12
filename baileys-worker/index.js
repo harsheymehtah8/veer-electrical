@@ -105,15 +105,24 @@ async function start() {
     }
   });
 
-  // ---- Poll outbox for messages tagged with MY sender_id ----
-  // CRITICAL: we use a self-scheduling setTimeout loop (NOT setInterval) so the
-  // next poll only fires AFTER the current send + its anti-ban delay are fully done.
-  // setInterval would fire every POLL_MS regardless of in-progress work, completely
-  // bypassing the 2-5 min blast delay.
+  // Track recent failures so we can back off if WhatsApp's socket is unhappy.
+  let recentFailures = []; // array of timestamps
+  let backoffUntil = 0;    // ms epoch — don't send until past this
+
   const tick = async () => {
     try {
       // Warm-up: don't send anything in the first 30s after a fresh connection.
       if (connectedAt > 0 && Date.now() - connectedAt < 30000) {
+        return;
+      }
+      // Backoff cooldown — if we're being rate-limited, just wait.
+      if (Date.now() < backoffUntil) {
+        const remaining = Math.round((backoffUntil - Date.now()) / 1000);
+        console.log(`   ⏸️  [${SENDER_ID}] backoff active, ${remaining}s remaining`);
+        return;
+      }
+      // Don't even fetch if the socket isn't open — saves a needless API roundtrip.
+      if (!sock.ws || sock.ws.readyState !== 1) {
         return;
       }
       // Fetch ONE message at a time so the blast delay genuinely spaces out sends.
@@ -123,6 +132,7 @@ async function start() {
       for (const item of msgs) {
         const jid = `${item.phone}@s.whatsapp.net`;
         const p = item.payload;
+        let sendSucceeded = false;
         try {
           // Pre-flight: confirm the number is actually registered on WhatsApp.
           let onWA = true;
@@ -167,6 +177,7 @@ async function start() {
               });
             }
           }
+          sendSucceeded = true;
           console.log(`📤 [${SENDER_ID}] ${item.phone}: ${p.type}`);
           // Ack immediately so dashboard flips Sending -> Sent in real time.
           try {
@@ -174,20 +185,8 @@ async function start() {
           } catch (ackErr) {
             console.warn(`⚠️  [${SENDER_ID}] ack-sent failed: ${ackErr.message}`);
           }
-          // Anti-ban: 2-5 min for blasts (configurable), 1-3s for bot replies.
-          // Default to BLAST if broadcast_id field is missing (older backend).
-          const isBlast = item.broadcast_id !== undefined ? !!item.broadcast_id : true;
-          let delay;
-          if (isBlast) {
-            const minMs = parseInt(process.env.BLAST_DELAY_MIN_MS || "120000", 10);
-            const maxMs = parseInt(process.env.BLAST_DELAY_MAX_MS || "300000", 10);
-            const spread = Math.max(0, maxMs - minMs);
-            delay = minMs + Math.random() * spread;
-          } else {
-            delay = 1000 + Math.random() * 2000;
-          }
-          console.log(`   ⏳ ${isBlast ? "BLAST" : "BOT"} delay ${Math.round(delay / 1000)}s`);
-          await new Promise((res) => setTimeout(res, delay));
+          // Reset failure tracking after each successful send.
+          recentFailures = [];
         } catch (e) {
           const reason = (e && e.message) ? String(e.message).slice(0, 250) : "send failed";
           console.error(`❌ [${SENDER_ID}] ${item.phone}: ${reason}`);
@@ -196,7 +195,36 @@ async function start() {
           } catch (ackErr) {
             console.warn(`⚠️  [${SENDER_ID}] ack-failed failed: ${ackErr.message}`);
           }
+          // Track this failure for backoff calculation.
+          recentFailures.push(Date.now());
+          recentFailures = recentFailures.filter((t) => Date.now() - t < 60000); // keep 60s window
+          // If 3+ failures in the last 60s, back off for 10 minutes.
+          if (recentFailures.length >= 3) {
+            backoffUntil = Date.now() + 10 * 60 * 1000;
+            console.error(`🚨 [${SENDER_ID}] ${recentFailures.length} failures in 60s — backing off 10min to protect SIM`);
+            recentFailures = []; // reset for next window
+            break; // exit batch loop immediately
+          }
         }
+        // Apply delay regardless of success/failure — prevents rapid-fire retry storms
+        // that look like spam to WhatsApp. Failures get a SHORTER delay (just long enough
+        // to let the socket recover) while successes get the full anti-ban delay.
+        let delay;
+        if (sendSucceeded) {
+          const isBlast = item.broadcast_id !== undefined ? !!item.broadcast_id : true;
+          if (isBlast) {
+            const minMs = parseInt(process.env.BLAST_DELAY_MIN_MS || "120000", 10);
+            const maxMs = parseInt(process.env.BLAST_DELAY_MAX_MS || "300000", 10);
+            delay = minMs + Math.random() * Math.max(0, maxMs - minMs);
+          } else {
+            delay = 1000 + Math.random() * 2000;
+          }
+        } else {
+          // Failure cooldown — 20-30s before next attempt so we don't hammer a sick socket.
+          delay = 20000 + Math.random() * 10000;
+        }
+        console.log(`   ⏳ ${sendSucceeded ? "SENT" : "FAIL-cooldown"} delay ${Math.round(delay / 1000)}s`);
+        await new Promise((res) => setTimeout(res, delay));
       }
       if (msgs.length > 0) {
         console.log(`📊 [${SENDER_ID}] tick done (${msgs.length} processed)`);
@@ -204,11 +232,10 @@ async function start() {
     } catch (e) {
       // dashboard temporarily unreachable — keep looping
     } finally {
-      // Schedule the NEXT poll only after this one (including the delay) is finished.
       setTimeout(tick, POLL_MS);
     }
   };
-  tick();  // kick off the first poll
+  tick();
 }
 
 start().catch((e) => { console.error(e); process.exit(1); });
