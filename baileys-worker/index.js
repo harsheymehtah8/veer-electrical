@@ -120,8 +120,6 @@ async function start() {
       const batchSize = process.env.BATCH_SIZE ? parseInt(process.env.BATCH_SIZE, 10) : 1;
       const r = await veer.get("/api/whatsapp/outbox", { params: { sender_id: SENDER_ID, limit: batchSize } });
       const msgs = r.data.messages || [];
-      const sent = [];
-      const failed = [];
       for (const item of msgs) {
         const jid = `${item.phone}@s.whatsapp.net`;
         const p = item.payload;
@@ -183,12 +181,20 @@ async function start() {
               });
             }
           }
-          sent.push(item.id);
           console.log(`📤 [${SENDER_ID}] ${item.phone}: ${p.type}`);
+          // Ack IMMEDIATELY so the dashboard flips from "Sending" to "Sent" right away,
+          // instead of waiting for the whole batch's delays to finish.
+          try {
+            await veer.post("/api/whatsapp/ack", { sent: [item.id], failed: [], sender_id: SENDER_ID });
+          } catch (ackErr) {
+            console.warn(`⚠️  [${SENDER_ID}] ack-sent failed: ${ackErr.message}`);
+          }
           // Anti-ban: blast delay is configurable via env (default 120-300s = 2-5 min).
           // 3-minute spread gives plenty of variation so WhatsApp can't fingerprint a cadence.
           // Bot replies stay fast (1-3s) since they're 1:1 conversational.
-          const isBlast = !!item.broadcast_id;
+          // Treat unknown/missing broadcast_id as a blast (safer default while production
+          // backend may not yet expose broadcast_id on the outbox endpoint).
+          const isBlast = item.broadcast_id !== undefined ? !!item.broadcast_id : true;
           let delay;
           if (isBlast) {
             const minMs = parseInt(process.env.BLAST_DELAY_MIN_MS || "120000", 10);
@@ -203,11 +209,16 @@ async function start() {
         } catch (e) {
           const reason = (e && e.message) ? String(e.message).slice(0, 250) : "send failed";
           console.error(`❌ [${SENDER_ID}] ${item.phone}: ${reason}`);
-          failed.push({ id: item.id, reason });
+          // Ack the failure immediately too so the dashboard shows it.
+          try {
+            await veer.post("/api/whatsapp/ack", { sent: [], failed: [{ id: item.id, reason }], sender_id: SENDER_ID });
+          } catch (ackErr) {
+            console.warn(`⚠️  [${SENDER_ID}] ack-failed failed: ${ackErr.message}`);
+          }
         }
       }
-      if (sent.length || failed.length) {
-        await veer.post("/api/whatsapp/ack", { sent, failed, sender_id: SENDER_ID });
+      if (msgs.length > 0) {
+        console.log(`📊 [${SENDER_ID}] batch complete (${msgs.length} processed)`);
       }
     } catch (e) {
       // dashboard temporarily unreachable
