@@ -185,12 +185,13 @@ async function start() {
           }
           sent.push(item.id);
           console.log(`📤 [${SENDER_ID}] ${item.phone}: ${p.type}`);
-          // Anti-ban: blast delay is configurable via env (default 240-300s = 4-5 min).
+          // Anti-ban: blast delay is configurable via env (default 120-300s = 2-5 min).
+          // 3-minute spread gives plenty of variation so WhatsApp can't fingerprint a cadence.
           // Bot replies stay fast (1-3s) since they're 1:1 conversational.
           const isBlast = !!item.broadcast_id;
           let delay;
           if (isBlast) {
-            const minMs = parseInt(process.env.BLAST_DELAY_MIN_MS || "240000", 10);
+            const minMs = parseInt(process.env.BLAST_DELAY_MIN_MS || "120000", 10);
             const maxMs = parseInt(process.env.BLAST_DELAY_MAX_MS || "300000", 10);
             const spread = Math.max(0, maxMs - minMs);
             delay = minMs + Math.random() * spread;

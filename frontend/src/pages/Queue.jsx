@@ -124,7 +124,7 @@ export default function Queue() {
         </button>
         <div className="flex-1">
           <h1 className="font-[Manrope] text-2xl font-bold tracking-tight text-gray-900">Live Queue</h1>
-          <p className="text-xs text-gray-500">Auto-refreshes every 3s • 4–5 min delay between sends</p>
+          <p className="text-xs text-gray-500">Auto-refreshes every 3s • 2–5 min delay between sends</p>
         </div>
         {((stats.totals.pending || 0) + (stats.totals.sending || 0)) > 0 && (
           <Button
