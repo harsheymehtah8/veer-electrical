@@ -106,17 +106,17 @@ async function start() {
   });
 
   // ---- Poll outbox for messages tagged with MY sender_id ----
-  setInterval(async () => {
+  // CRITICAL: we use a self-scheduling setTimeout loop (NOT setInterval) so the
+  // next poll only fires AFTER the current send + its anti-ban delay are fully done.
+  // setInterval would fire every POLL_MS regardless of in-progress work, completely
+  // bypassing the 2-5 min blast delay.
+  const tick = async () => {
     try {
       // Warm-up: don't send anything in the first 30s after a fresh connection.
-      // Gives WhatsApp server time to propagate new sender keys to recipients,
-      // preventing "Waiting for this message" on the receiving end.
       if (connectedAt > 0 && Date.now() - connectedAt < 30000) {
         return;
       }
       // Fetch ONE message at a time so the blast delay genuinely spaces out sends.
-      // Fetching a batch causes the within-batch delay to be respected but the
-      // *between-batch* gap to be small (just the poll interval).
       const batchSize = process.env.BATCH_SIZE ? parseInt(process.env.BATCH_SIZE, 10) : 1;
       const r = await veer.get("/api/whatsapp/outbox", { params: { sender_id: SENDER_ID, limit: batchSize } });
       const msgs = r.data.messages || [];
@@ -125,44 +125,32 @@ async function start() {
         const p = item.payload;
         try {
           // Pre-flight: confirm the number is actually registered on WhatsApp.
-          // Cheap call (cached server-side by Baileys) — saves "send to ghost" failures
-          // that the WA server silently swallows.
           let onWA = true;
           try {
             const checks = await sock.onWhatsApp(item.phone);
             onWA = !!(checks && checks[0] && checks[0].exists);
           } catch (_) {
-            onWA = true; // if check fails, attempt send anyway
+            onWA = true;
           }
           if (!onWA) {
             throw new Error("Not registered on WhatsApp");
           }
-          // ⭐ Pre-establish the Signal encryption session BEFORE sending.
-          // Fixes "Waiting for this message" on recipient side — happens when sender
-          // has a fresh identity (recently re-linked SIM) and recipient hasn't yet
-          // received the new pre-keys. assertSessions fetches pre-keys explicitly so
-          // the first message decrypts immediately.
+          // Pre-establish Signal session so recipient sees the message immediately.
           try {
             if (typeof sock.assertSessions === "function") {
               await sock.assertSessions([jid], true);
             }
           } catch (sessErr) {
-            // Non-fatal — let the actual send try anyway. Common when contact has
-            // privacy settings restricting prekey access.
             console.warn(`⚠️  [${SENDER_ID}] ${item.phone}: assertSessions warn: ${sessErr.message}`);
           }
           if (p.type === "text") {
             await sock.sendMessage(jid, { text: p.text });
           } else if (p.file_id) {
-            // Fetch the media file once
             const fileUrl = `${VEER_API_URL}/api/files/${p.file_id}`;
             const fileRes = await axios.get(fileUrl, { responseType: "arraybuffer" });
             const buf = Buffer.from(fileRes.data);
             const filename = p.filename || `file`;
             const mime = p.mimetype || "application/octet-stream";
-
-            // Branch on media kind so WhatsApp renders preview/playback correctly.
-            // Caption is supported on image + video (renders inline below the media).
             const caption = p.caption || undefined;
             if (p.type === "image") {
               await sock.sendMessage(jid, { image: buf, mimetype: mime, fileName: filename, caption });
@@ -171,8 +159,6 @@ async function start() {
             } else if (p.type === "audio") {
               await sock.sendMessage(jid, { audio: buf, mimetype: mime, ptt: false });
             } else {
-              // pdf | document | any other -> send as document with explicit mimetype.
-              // WhatsApp can show a caption for docs since 2023; pass it through too.
               await sock.sendMessage(jid, {
                 document: buf,
                 mimetype: mime,
@@ -182,18 +168,14 @@ async function start() {
             }
           }
           console.log(`📤 [${SENDER_ID}] ${item.phone}: ${p.type}`);
-          // Ack IMMEDIATELY so the dashboard flips from "Sending" to "Sent" right away,
-          // instead of waiting for the whole batch's delays to finish.
+          // Ack immediately so dashboard flips Sending -> Sent in real time.
           try {
             await veer.post("/api/whatsapp/ack", { sent: [item.id], failed: [], sender_id: SENDER_ID });
           } catch (ackErr) {
             console.warn(`⚠️  [${SENDER_ID}] ack-sent failed: ${ackErr.message}`);
           }
-          // Anti-ban: blast delay is configurable via env (default 120-300s = 2-5 min).
-          // 3-minute spread gives plenty of variation so WhatsApp can't fingerprint a cadence.
-          // Bot replies stay fast (1-3s) since they're 1:1 conversational.
-          // Treat unknown/missing broadcast_id as a blast (safer default while production
-          // backend may not yet expose broadcast_id on the outbox endpoint).
+          // Anti-ban: 2-5 min for blasts (configurable), 1-3s for bot replies.
+          // Default to BLAST if broadcast_id field is missing (older backend).
           const isBlast = item.broadcast_id !== undefined ? !!item.broadcast_id : true;
           let delay;
           if (isBlast) {
@@ -204,12 +186,11 @@ async function start() {
           } else {
             delay = 1000 + Math.random() * 2000;
           }
-          console.log(`   ⏳ ${isBlast ? "BLAST" : "BOT"} delay ${Math.round(delay/1000)}s`);
+          console.log(`   ⏳ ${isBlast ? "BLAST" : "BOT"} delay ${Math.round(delay / 1000)}s`);
           await new Promise((res) => setTimeout(res, delay));
         } catch (e) {
           const reason = (e && e.message) ? String(e.message).slice(0, 250) : "send failed";
           console.error(`❌ [${SENDER_ID}] ${item.phone}: ${reason}`);
-          // Ack the failure immediately too so the dashboard shows it.
           try {
             await veer.post("/api/whatsapp/ack", { sent: [], failed: [{ id: item.id, reason }], sender_id: SENDER_ID });
           } catch (ackErr) {
@@ -218,12 +199,16 @@ async function start() {
         }
       }
       if (msgs.length > 0) {
-        console.log(`📊 [${SENDER_ID}] batch complete (${msgs.length} processed)`);
+        console.log(`📊 [${SENDER_ID}] tick done (${msgs.length} processed)`);
       }
     } catch (e) {
-      // dashboard temporarily unreachable
+      // dashboard temporarily unreachable — keep looping
+    } finally {
+      // Schedule the NEXT poll only after this one (including the delay) is finished.
+      setTimeout(tick, POLL_MS);
     }
-  }, POLL_MS);
+  };
+  tick();  // kick off the first poll
 }
 
 start().catch((e) => { console.error(e); process.exit(1); });
