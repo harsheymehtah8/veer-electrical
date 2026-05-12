@@ -114,7 +114,11 @@ async function start() {
       if (connectedAt > 0 && Date.now() - connectedAt < 30000) {
         return;
       }
-      const r = await veer.get("/api/whatsapp/outbox", { params: { sender_id: SENDER_ID, limit: 20 } });
+      // Fetch ONE message at a time so the blast delay genuinely spaces out sends.
+      // Fetching a batch causes the within-batch delay to be respected but the
+      // *between-batch* gap to be small (just the poll interval).
+      const batchSize = process.env.BATCH_SIZE ? parseInt(process.env.BATCH_SIZE, 10) : 1;
+      const r = await veer.get("/api/whatsapp/outbox", { params: { sender_id: SENDER_ID, limit: batchSize } });
       const msgs = r.data.messages || [];
       const sent = [];
       const failed = [];
@@ -181,12 +185,18 @@ async function start() {
           }
           sent.push(item.id);
           console.log(`📤 [${SENDER_ID}] ${item.phone}: ${p.type}`);
-          // Anti-ban: random 8-25s for blast messages, 1-3s for bot replies.
-          // broadcast_id arrives at the top level of `item` (not inside payload).
+          // Anti-ban: blast delay is configurable via env (default 240-300s = 4-5 min).
+          // Bot replies stay fast (1-3s) since they're 1:1 conversational.
           const isBlast = !!item.broadcast_id;
-          const delay = isBlast
-            ? 8000 + Math.random() * 17000
-            : 1000 + Math.random() * 2000;
+          let delay;
+          if (isBlast) {
+            const minMs = parseInt(process.env.BLAST_DELAY_MIN_MS || "240000", 10);
+            const maxMs = parseInt(process.env.BLAST_DELAY_MAX_MS || "300000", 10);
+            const spread = Math.max(0, maxMs - minMs);
+            delay = minMs + Math.random() * spread;
+          } else {
+            delay = 1000 + Math.random() * 2000;
+          }
           console.log(`   ⏳ ${isBlast ? "BLAST" : "BOT"} delay ${Math.round(delay/1000)}s`);
           await new Promise((res) => setTimeout(res, delay));
         } catch (e) {

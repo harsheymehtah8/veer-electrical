@@ -867,6 +867,16 @@ async def delete_group(gid: str):
     await db.groups.delete_one({"id": gid})
     return {"ok": True}
 
+@api.get("/groups/{gid}/history")
+async def group_blast_history(gid: str, limit: int = 50):
+    """Returns the past blasts that were sent to this group (most recent first)."""
+    items = await db.broadcasts.find(
+        {"group_id": gid},
+        {"_id": 0, "id": 1, "total": 1, "sent": 1, "failed": 1, "status": 1,
+         "message": 1, "attachment_name": 1, "created_at": 1, "mode": 1},
+    ).sort("created_at", -1).to_list(limit)
+    return items
+
 # ============ SENDERS ============
 @api.get("/senders")
 async def list_senders():
@@ -1355,6 +1365,25 @@ async def cancel_pending_queue():
     )
     return {"cancelled": res.modified_count}
 
+
+@api.post("/whatsapp/queue/retry-failed")
+async def retry_failed():
+    """Re-queue all failed messages back to 'pending' so workers retry them."""
+    res = await db.outbox.update_many(
+        {"status": "failed"},
+        {"$set": {"status": "pending", "retried_at": now_iso()}, "$unset": {"error_reason": "", "failed_at": ""}},
+    )
+    return {"retried": res.modified_count}
+
+
+@api.post("/whatsapp/queue/clear-history")
+async def clear_queue_history():
+    """Delete completed queue records (sent + failed + cancelled).
+    Active rows (pending, sending) are kept so an in-progress blast isn't disrupted.
+    """
+    res = await db.outbox.delete_many({"status": {"$in": ["sent", "failed", "cancelled"]}})
+    return {"deleted": res.deleted_count}
+
 @api.post("/whatsapp/regenerate-secret")
 async def regenerate_secret():
     new_secret = uuid.uuid4().hex
@@ -1566,6 +1595,14 @@ async def start_broadcast(payload: Dict[str, Any], background_tasks: BackgroundT
     sender_id = payload.get("sender_id")
     if sender_id:
         job["sender_id"] = sender_id
+    # Tag the group this blast came from (if any) so we can show per-group history
+    group_id = payload.get("group_id")
+    if group_id:
+        job["group_id"] = group_id
+        # Also store the group name snapshot at send time
+        grp = await db.groups.find_one({"_id": group_id}, {"name": 1})
+        if grp:
+            job["group_name"] = grp.get("name")
     await db.broadcasts.insert_one({"_id": job["id"], **job})
     background_tasks.add_task(run_broadcast, job["id"])
     return job

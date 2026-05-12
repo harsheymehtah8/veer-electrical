@@ -3,13 +3,14 @@ import api from "@/lib/api";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { ArrowLeft, FileText, Clock, CheckCircle2, XCircle, Loader2, Ban } from "lucide-react";
+import { ArrowLeft, FileText, Clock, CheckCircle2, XCircle, Loader2, Ban, RotateCcw, Eraser } from "lucide-react";
 
 export default function Queue() {
   const [stats, setStats] = useState({ totals: { pending: 0, sending: 0, sent: 0, failed: 0 }, by_sender: {} });
   const [recent, setRecent] = useState([]);
   const [senders, setSenders] = useState([]);
   const [cancelling, setCancelling] = useState(false);
+  const [busy, setBusy] = useState(false);
   const nav = useNavigate();
 
   const load = async () => {
@@ -77,6 +78,44 @@ export default function Queue() {
     }
   };
 
+  const retryFailed = async () => {
+    const failedNow = stats.totals.failed || 0;
+    if (failedNow === 0) {
+      toast("No failed messages to retry");
+      return;
+    }
+    if (!window.confirm(`Re-queue ${failedNow} failed message${failedNow > 1 ? "s" : ""}?`)) return;
+    setBusy(true);
+    try {
+      const r = await api.post("/whatsapp/queue/retry-failed");
+      toast.success(`Re-queued ${r.data.retried} message${r.data.retried !== 1 ? "s" : ""}`);
+      load();
+    } catch {
+      toast.error("Retry failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const clearHistory = async () => {
+    const total = (stats.totals.sent || 0) + (stats.totals.failed || 0) + (stats.totals.cancelled || 0);
+    if (total === 0) {
+      toast("Nothing to clear");
+      return;
+    }
+    if (!window.confirm(`Delete ${total} history record${total > 1 ? "s" : ""}?\nPending and sending messages will be kept.`)) return;
+    setBusy(true);
+    try {
+      const r = await api.post("/whatsapp/queue/clear-history");
+      toast.success(`Cleared ${r.data.deleted} record${r.data.deleted !== 1 ? "s" : ""}`);
+      load();
+    } catch {
+      toast.error("Clear failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-4" data-testid="queue-page">
       <div className="flex items-center gap-3 pt-2">
@@ -85,7 +124,7 @@ export default function Queue() {
         </button>
         <div className="flex-1">
           <h1 className="font-[Manrope] text-2xl font-bold tracking-tight text-gray-900">Live Queue</h1>
-          <p className="text-xs text-gray-500">Auto-refreshes every 3s • 8–25s delay between sends</p>
+          <p className="text-xs text-gray-500">Auto-refreshes every 3s • 4–5 min delay between sends</p>
         </div>
         {((stats.totals.pending || 0) + (stats.totals.sending || 0)) > 0 && (
           <Button
@@ -99,6 +138,30 @@ export default function Queue() {
             {cancelling ? "Cancelling..." : "Cancel"}
           </Button>
         )}
+      </div>
+
+      {/* Queue actions row */}
+      <div className="flex gap-2">
+        <Button
+          onClick={retryFailed}
+          disabled={busy || !(stats.totals.failed || 0)}
+          variant="outline"
+          className="flex-1 rounded-full h-10 border-blue-200 text-blue-700 hover:bg-blue-50 disabled:opacity-50 press-fx"
+          data-testid="retry-failed-btn"
+        >
+          <RotateCcw className="w-4 h-4 mr-1" />
+          Retry {stats.totals.failed || 0} failed
+        </Button>
+        <Button
+          onClick={clearHistory}
+          disabled={busy || !((stats.totals.sent || 0) + (stats.totals.failed || 0) + (stats.totals.cancelled || 0))}
+          variant="outline"
+          className="flex-1 rounded-full h-10 border-gray-200 text-gray-700 hover:bg-gray-100 disabled:opacity-50 press-fx"
+          data-testid="clear-history-btn"
+        >
+          <Eraser className="w-4 h-4 mr-1" />
+          Clear history
+        </Button>
       </div>
 
       {/* Totals */}

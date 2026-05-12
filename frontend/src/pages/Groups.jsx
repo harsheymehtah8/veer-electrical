@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { ArrowLeft, Plus, Pencil, Trash2, Users, Search, Send, X } from "lucide-react";
+import { ArrowLeft, Plus, Pencil, Trash2, Users, Search, Send, X, Clock } from "lucide-react";
 
 const SOURCE_LABEL = { manual: "Manual", imported: "Imported", bot: "Bot Lead" };
 
@@ -14,6 +14,7 @@ export default function Groups() {
   const [groups, setGroups] = useState([]);
   const [q, setQ] = useState("");
   const [openGroup, setOpenGroup] = useState(null); // { id, name, contacts }
+  const [groupHistory, setGroupHistory] = useState([]);
   const [renaming, setRenaming] = useState(null); // { id, name }
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
@@ -43,6 +44,12 @@ export default function Groups() {
   const openDetails = async (g) => {
     const r = await api.get(`/groups/${g.id}`);
     setOpenGroup(r.data);
+    try {
+      const h = await api.get(`/groups/${g.id}/history`);
+      setGroupHistory(h.data || []);
+    } catch {
+      setGroupHistory([]);
+    }
   };
 
   const create = async () => {
@@ -224,7 +231,7 @@ export default function Groups() {
                   <Send className="w-4 h-4 mr-1" /> Blast
                 </Button>
               </div>
-              <div className="space-y-1.5 max-h-[50vh] overflow-auto" data-testid="group-members-list">
+              <div className="space-y-1.5 max-h-[40vh] overflow-auto" data-testid="group-members-list">
                 {(openGroup.contacts || []).length === 0 && <p className="text-center text-sm text-gray-400 py-6">No members yet</p>}
                 {(openGroup.contacts || []).map((c) => (
                   <div key={c.id} className="flex items-center gap-2 bg-gray-50 rounded-xl p-2.5">
@@ -240,6 +247,38 @@ export default function Groups() {
                     </button>
                   </div>
                 ))}
+              </div>
+
+              {/* Blast history for this group */}
+              <div className="border-t border-gray-100 pt-3" data-testid="group-history">
+                <div className="text-xs font-semibold uppercase tracking-[0.15em] text-gray-500 mb-2 flex items-center gap-1">
+                  <Clock className="w-3.5 h-3.5" /> Sent history ({groupHistory.length})
+                </div>
+                {groupHistory.length === 0 ? (
+                  <p className="text-xs text-gray-400 italic">No blasts sent to this group yet.</p>
+                ) : (
+                  <div className="space-y-1.5 max-h-32 overflow-auto">
+                    {groupHistory.map((h) => {
+                      const dt = h.created_at ? new Date(h.created_at) : null;
+                      const when = dt ? dt.toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
+                      return (
+                        <div key={h.id} className="bg-gray-50 rounded-xl p-2 text-xs" data-testid={`history-${h.id}`}>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-medium truncate">{when}</span>
+                            <span className="text-[10px] text-gray-500">{h.status}</span>
+                          </div>
+                          <div className="flex items-center gap-2 text-[11px] text-gray-600 mt-0.5">
+                            <span className="text-emerald-600">✓ {h.sent || 0}</span>
+                            <span className="text-red-600">✗ {h.failed || 0}</span>
+                            <span className="text-gray-400">of {h.total}</span>
+                            {h.attachment_name && <span className="text-violet-600 truncate">📎 {h.attachment_name}</span>}
+                          </div>
+                          {h.message && <div className="text-gray-500 truncate mt-0.5">{h.message.slice(0, 50)}{h.message.length > 50 ? "…" : ""}</div>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </div>
           )}
