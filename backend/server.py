@@ -1438,36 +1438,53 @@ async def run_broadcast(job_id: str):
     await db.broadcasts.update_one({"_id": job_id}, {"$set": {"status": "running", "total": total_msgs, "sent": 0, "failed": 0}})
 
     def make_payloads():
+        """Return the list of payloads to send.
+        - Image/video + text -> ONE payload with caption (single WhatsApp message)
+        - PDF/audio/doc + text -> TWO payloads (caption isn't shown inline for docs)
+        - Only text or only attachment -> ONE payload
+        """
+        caption = text.strip()
         out = []
-        if text.strip():
-            out.append({"type": "text", "text": text})
-        if attach_id:
-            # Detect media kind from file extension so WhatsApp renders it correctly.
-            # JPEG sent with application/pdf mimetype won't open — that's been the bug.
-            fname = (attach_name or "file").lower()
-            ext = fname.rsplit(".", 1)[-1] if "." in fname else ""
-            kind_map = {
-                "jpg": ("image", "image/jpeg"),
-                "jpeg": ("image", "image/jpeg"),
-                "png": ("image", "image/png"),
-                "webp": ("image", "image/webp"),
-                "gif": ("image", "image/gif"),
-                "mp4": ("video", "video/mp4"),
-                "mov": ("video", "video/quicktime"),
-                "3gp": ("video", "video/3gpp"),
-                "mp3": ("audio", "audio/mpeg"),
-                "ogg": ("audio", "audio/ogg"),
-                "wav": ("audio", "audio/wav"),
-                "m4a": ("audio", "audio/mp4"),
-                "pdf": ("pdf", "application/pdf"),
-            }
-            media_type, mime = kind_map.get(ext, ("document", "application/octet-stream"))
-            out.append({
-                "type": media_type,
-                "file_id": attach_id,
-                "filename": attach_name or f"file.{ext or 'bin'}",
-                "mimetype": mime,
-            })
+        if not attach_id:
+            if caption:
+                out.append({"type": "text", "text": caption})
+            return out
+
+        # Detect media kind from filename extension
+        fname = (attach_name or "file").lower()
+        ext = fname.rsplit(".", 1)[-1] if "." in fname else ""
+        kind_map = {
+            "jpg": ("image", "image/jpeg"),
+            "jpeg": ("image", "image/jpeg"),
+            "png": ("image", "image/png"),
+            "webp": ("image", "image/webp"),
+            "gif": ("image", "image/gif"),
+            "mp4": ("video", "video/mp4"),
+            "mov": ("video", "video/quicktime"),
+            "3gp": ("video", "video/3gpp"),
+            "mp3": ("audio", "audio/mpeg"),
+            "ogg": ("audio", "audio/ogg"),
+            "wav": ("audio", "audio/wav"),
+            "m4a": ("audio", "audio/mp4"),
+            "pdf": ("pdf", "application/pdf"),
+        }
+        media_type, mime = kind_map.get(ext, ("document", "application/octet-stream"))
+
+        media_payload = {
+            "type": media_type,
+            "file_id": attach_id,
+            "filename": attach_name or f"file.{ext or 'bin'}",
+            "mimetype": mime,
+        }
+        # For image/video: attach caption directly so it's a single combined message.
+        # For audio/pdf/document: send text separately because WA doesn't surface captions on docs.
+        if caption and media_type in ("image", "video"):
+            media_payload["caption"] = caption
+            out.append(media_payload)
+        else:
+            if caption:
+                out.append({"type": "text", "text": caption})
+            out.append(media_payload)
         return out
 
     payloads = make_payloads()

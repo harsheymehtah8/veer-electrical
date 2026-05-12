@@ -159,19 +159,23 @@ async function start() {
             const filename = p.filename || `file`;
             const mime = p.mimetype || "application/octet-stream";
 
-            // Branch on media kind so WhatsApp renders preview/playback correctly
+            // Branch on media kind so WhatsApp renders preview/playback correctly.
+            // Caption is supported on image + video (renders inline below the media).
+            const caption = p.caption || undefined;
             if (p.type === "image") {
-              await sock.sendMessage(jid, { image: buf, mimetype: mime, fileName: filename });
+              await sock.sendMessage(jid, { image: buf, mimetype: mime, fileName: filename, caption });
             } else if (p.type === "video") {
-              await sock.sendMessage(jid, { video: buf, mimetype: mime, fileName: filename });
+              await sock.sendMessage(jid, { video: buf, mimetype: mime, fileName: filename, caption });
             } else if (p.type === "audio") {
               await sock.sendMessage(jid, { audio: buf, mimetype: mime, ptt: false });
             } else {
-              // pdf | document | any other -> send as document with explicit mimetype
+              // pdf | document | any other -> send as document with explicit mimetype.
+              // WhatsApp can show a caption for docs since 2023; pass it through too.
               await sock.sendMessage(jid, {
                 document: buf,
                 mimetype: mime,
                 fileName: filename,
+                ...(caption ? { caption } : {}),
               });
             }
           }
